@@ -61,8 +61,8 @@ impl Component {
 
                 // if a schedule exists, then the component is causal
                 let res = graph::toposort(&subgraph, None);
-                if let Err(ident) = res {
-                    let name = ctx.get_name(ident.node_id());
+                if let Err(cycle) = res {
+                    let name = ctx.get_name(cycle.node_id());
                     bad!( errors, @self.get_location() => ErrorKind::ident_non_causal(name.to_string()) )
                 }
 
@@ -191,14 +191,6 @@ impl Component {
     pub fn is_normal_form(&self) -> bool {
         match &self.body_or_path {
             Either::Left(body) => body.is_normal_form(),
-            Either::Right(_) => true,
-        }
-    }
-
-    /// Tell if there is no component application.
-    pub fn no_comp_application(&self) -> bool {
-        match &self.body_or_path {
-            Either::Left(body) => body.no_comp_application(),
             Either::Right(_) => true,
         }
     }
@@ -436,12 +428,6 @@ impl ComponentBody {
         self.statements
             .iter()
             .all(|statement| statement.is_normal_form())
-    }
-    /// Tell if there is no component application.
-    pub fn no_comp_application(&self) -> bool {
-        self.statements
-            .iter()
-            .all(|statement| statement.no_comp_application())
     }
 
     /// Create memory for [ir1] component.

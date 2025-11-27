@@ -337,6 +337,14 @@ impl HasWeight for Expr {
 }
 
 impl Expr {
+    pub fn new(kind: ir1::expr::Kind<Self>, loc: Loc) -> Self {
+        Expr {
+            kind,
+            typing: None,
+            loc,
+            dependencies: Dependencies::new(),
+        }
+    }
     /// Get expression's type.
     pub fn get_type(&self) -> Option<&Typ> {
         self.typing.as_ref()

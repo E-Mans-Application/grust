@@ -23,70 +23,17 @@ impl grust::core::Component for AuxState {
                 ) = {
                     #[allow(unused_imports)]
                     use grust::rayon::prelude::*;
-                    (0..3usize)
-                        .into_par_iter()
-                        .map(|idx: usize| match idx {
-                            0usize => (Some({ 7i64 * input.i }), None, None),
-                            1usize => (None, Some({ (input.i - 54i64) * 2i64 }), None),
-                            2usize => (None, None, Some({ (input.i + 54i64) * 2i64 })),
-                            idx => unreachable!(
-                                "fatal error in rayon branches, illegal index `{}`",
-                                idx,
-                            ),
-                        })
-                        .reduce(
-                            || (None, None, None),
-                            |(
-                                reserved_grust_rayon_opt_var_0,
-                                reserved_grust_rayon_opt_var_1,
-                                reserved_grust_rayon_opt_var_2,
-                            ),
-                             (
-                                reserved_grust_rayon_opt_var_0_rgt,
-                                reserved_grust_rayon_opt_var_1_rgt,
-                                reserved_grust_rayon_opt_var_2_rgt,
-                            )| {
-                                (
-                                    match (
-                                        reserved_grust_rayon_opt_var_0,
-                                        reserved_grust_rayon_opt_var_0_rgt,
-                                    ) {
-                                        (None, None) => None,
-                                        (Some(val), None) | (None, Some(val)) => Some(val),
-                                        (Some(_), Some(_)) => unreachable!
-                        ("fatal error in rayon reduce operation, found two values"),
-                                    },
-                                    match (
-                                        reserved_grust_rayon_opt_var_1,
-                                        reserved_grust_rayon_opt_var_1_rgt,
-                                    ) {
-                                        (None, None) => None,
-                                        (Some(val), None) | (None, Some(val)) => Some(val),
-                                        (Some(_), Some(_)) => unreachable!
-                        ("fatal error in rayon reduce operation, found two values"),
-                                    },
-                                    match (
-                                        reserved_grust_rayon_opt_var_2,
-                                        reserved_grust_rayon_opt_var_2_rgt,
-                                    ) {
-                                        (None, None) => None,
-                                        (Some(val), None) | (None, Some(val)) => Some(val),
-                                        (Some(_), Some(_)) => unreachable!
-                        ("fatal error in rayon reduce operation, found two values"),
-                                    },
-                                )
-                            },
-                        )
+                    (0 .. 3usize) . into_par_iter () . map (| idx : usize | match idx {0usize => (Some ({7i64 * input . i}) , None , None) , 1usize => (None , Some ({(input . i - 54i64) * 2i64}) , None) , 2usize => (None , None , Some ({(input . i + 54i64) * 2i64})) , idx => unreachable ! ("fatal error in rayon branches, illegal index `{}`" , idx ,) ,}) . reduce (|| (None , None , None) , | (reserved_grust_rayon_opt_var_0 , reserved_grust_rayon_opt_var_1 , reserved_grust_rayon_opt_var_2) , (reserved_grust_rayon_opt_var_0_rgt , reserved_grust_rayon_opt_var_1_rgt , reserved_grust_rayon_opt_var_2_rgt) | (match (reserved_grust_rayon_opt_var_0 , reserved_grust_rayon_opt_var_0_rgt) {(None , None) => None , (Some (val) , None) | (None , Some (val)) => Some (val) , (Some (_) , Some (_)) => unreachable ! ("fatal error in rayon reduce operation, found two values")} , match (reserved_grust_rayon_opt_var_1 , reserved_grust_rayon_opt_var_1_rgt) {(None , None) => None , (Some (val) , None) | (None , Some (val)) => Some (val) , (Some (_) , Some (_)) => unreachable ! ("fatal error in rayon reduce operation, found two values")} , match (reserved_grust_rayon_opt_var_2 , reserved_grust_rayon_opt_var_2_rgt) {(None , None) => None , (Some (val) , None) | (None , Some (val)) => Some (val) , (Some (_) , Some (_)) => unreachable ! ("fatal error in rayon reduce operation, found two values")}))
                 };
                 (
                     {
-                        reserved_grust_rayon_opt_var_0.expect("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
+                        reserved_grust_rayon_opt_var_0 . expect ("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
                     },
                     {
-                        reserved_grust_rayon_opt_var_1.expect("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
+                        reserved_grust_rayon_opt_var_1 . expect ("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
                     },
                     {
-                        reserved_grust_rayon_opt_var_2.expect("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
+                        reserved_grust_rayon_opt_var_2 . expect ("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
                     },
                 )
             };
@@ -97,52 +44,14 @@ impl grust::core::Component for AuxState {
                 let (reserved_grust_rayon_opt_var_0, reserved_grust_rayon_opt_var_1) = {
                     #[allow(unused_imports)]
                     use grust::rayon::prelude::*;
-                    (0..2usize)
-                        .into_par_iter()
-                        .map(|idx: usize| match idx {
-                            0usize => (Some({ i1 + i2 }), None),
-                            1usize => (None, Some({ i2 + i3 })),
-                            idx => unreachable!(
-                                "fatal error in rayon branches, illegal index `{}`",
-                                idx,
-                            ),
-                        })
-                        .reduce(
-                            || (None, None),
-                            |(reserved_grust_rayon_opt_var_0, reserved_grust_rayon_opt_var_1),
-                             (
-                                reserved_grust_rayon_opt_var_0_rgt,
-                                reserved_grust_rayon_opt_var_1_rgt,
-                            )| {
-                                (
-                                    match (
-                                        reserved_grust_rayon_opt_var_0,
-                                        reserved_grust_rayon_opt_var_0_rgt,
-                                    ) {
-                                        (None, None) => None,
-                                        (Some(val), None) | (None, Some(val)) => Some(val),
-                                        (Some(_), Some(_)) => unreachable!
-                        ("fatal error in rayon reduce operation, found two values"),
-                                    },
-                                    match (
-                                        reserved_grust_rayon_opt_var_1,
-                                        reserved_grust_rayon_opt_var_1_rgt,
-                                    ) {
-                                        (None, None) => None,
-                                        (Some(val), None) | (None, Some(val)) => Some(val),
-                                        (Some(_), Some(_)) => unreachable!
-                        ("fatal error in rayon reduce operation, found two values"),
-                                    },
-                                )
-                            },
-                        )
+                    (0 .. 2usize) . into_par_iter () . map (| idx : usize | match idx {0usize => (Some ({i1 + i2}) , None) , 1usize => (None , Some ({i2 + i3})) , idx => unreachable ! ("fatal error in rayon branches, illegal index `{}`" , idx ,) ,}) . reduce (|| (None , None) , | (reserved_grust_rayon_opt_var_0 , reserved_grust_rayon_opt_var_1) , (reserved_grust_rayon_opt_var_0_rgt , reserved_grust_rayon_opt_var_1_rgt) | (match (reserved_grust_rayon_opt_var_0 , reserved_grust_rayon_opt_var_0_rgt) {(None , None) => None , (Some (val) , None) | (None , Some (val)) => Some (val) , (Some (_) , Some (_)) => unreachable ! ("fatal error in rayon reduce operation, found two values")} , match (reserved_grust_rayon_opt_var_1 , reserved_grust_rayon_opt_var_1_rgt) {(None , None) => None , (Some (val) , None) | (None , Some (val)) => Some (val) , (Some (_) , Some (_)) => unreachable ! ("fatal error in rayon reduce operation, found two values")}))
                 };
                 (
                     {
-                        reserved_grust_rayon_opt_var_0.expect("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
+                        reserved_grust_rayon_opt_var_0 . expect ("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
                     },
                     {
-                        reserved_grust_rayon_opt_var_1.expect("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
+                        reserved_grust_rayon_opt_var_1 . expect ("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
                     },
                 )
             };
@@ -203,52 +112,14 @@ impl grust::core::Component for TestState {
                 let (reserved_grust_rayon_opt_var_0, reserved_grust_rayon_opt_var_1) = {
                     #[allow(unused_imports)]
                     use grust::rayon::prelude::*;
-                    (0..2usize)
-                        .into_par_iter()
-                        .map(|idx: usize| match idx {
-                            0usize => (Some({ (input.i - 54i64) * 2i64 }), None),
-                            1usize => (None, Some({ (input.i + 54i64) * 2i64 })),
-                            idx => unreachable!(
-                                "fatal error in rayon branches, illegal index `{}`",
-                                idx,
-                            ),
-                        })
-                        .reduce(
-                            || (None, None),
-                            |(reserved_grust_rayon_opt_var_0, reserved_grust_rayon_opt_var_1),
-                             (
-                                reserved_grust_rayon_opt_var_0_rgt,
-                                reserved_grust_rayon_opt_var_1_rgt,
-                            )| {
-                                (
-                                    match (
-                                        reserved_grust_rayon_opt_var_0,
-                                        reserved_grust_rayon_opt_var_0_rgt,
-                                    ) {
-                                        (None, None) => None,
-                                        (Some(val), None) | (None, Some(val)) => Some(val),
-                                        (Some(_), Some(_)) => unreachable!
-                        ("fatal error in rayon reduce operation, found two values"),
-                                    },
-                                    match (
-                                        reserved_grust_rayon_opt_var_1,
-                                        reserved_grust_rayon_opt_var_1_rgt,
-                                    ) {
-                                        (None, None) => None,
-                                        (Some(val), None) | (None, Some(val)) => Some(val),
-                                        (Some(_), Some(_)) => unreachable!
-                        ("fatal error in rayon reduce operation, found two values"),
-                                    },
-                                )
-                            },
-                        )
+                    (0 .. 2usize) . into_par_iter () . map (| idx : usize | match idx {0usize => (Some ({(input . i - 54i64) * 2i64}) , None) , 1usize => (None , Some ({(input . i + 54i64) * 2i64})) , idx => unreachable ! ("fatal error in rayon branches, illegal index `{}`" , idx ,) ,}) . reduce (|| (None , None) , | (reserved_grust_rayon_opt_var_0 , reserved_grust_rayon_opt_var_1) , (reserved_grust_rayon_opt_var_0_rgt , reserved_grust_rayon_opt_var_1_rgt) | (match (reserved_grust_rayon_opt_var_0 , reserved_grust_rayon_opt_var_0_rgt) {(None , None) => None , (Some (val) , None) | (None , Some (val)) => Some (val) , (Some (_) , Some (_)) => unreachable ! ("fatal error in rayon reduce operation, found two values")} , match (reserved_grust_rayon_opt_var_1 , reserved_grust_rayon_opt_var_1_rgt) {(None , None) => None , (Some (val) , None) | (None , Some (val)) => Some (val) , (Some (_) , Some (_)) => unreachable ! ("fatal error in rayon reduce operation, found two values")}))
                 };
                 (
                     {
-                        reserved_grust_rayon_opt_var_0.expect("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
+                        reserved_grust_rayon_opt_var_0 . expect ("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
                     },
                     {
-                        reserved_grust_rayon_opt_var_1.expect("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
+                        reserved_grust_rayon_opt_var_1 . expect ("unreachable: fatal error in final rayon unwrap, unexpected `None` value")
                     },
                 )
             };

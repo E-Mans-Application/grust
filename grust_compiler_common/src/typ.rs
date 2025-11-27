@@ -2,7 +2,7 @@ prelude! {
     syn::{Parse, Punctuated, token},
 }
 
-/// GRust type system.
+/// GRust types.
 ///
 /// [Typ] enumeration used when typing a GRust program.
 ///
@@ -337,7 +337,7 @@ mk_new! { impl Typ =>
             tys
         },
     }
-    Option: sm_event {
+    Option: option {
         ty: Typ = ty.into(),
         question_token = Default::default(),
     }
@@ -662,7 +662,7 @@ impl Typ {
     /// assert_eq!(e_type, Typ::event(Typ::bool()));
     ///
     /// assert_eq!(s_type.convert(), Typ::int());
-    /// assert_eq!(e_type.convert(), Typ::sm_event(Typ::bool()));
+    /// assert_eq!(e_type.convert(), Typ::option(Typ::bool()));
     /// ```
     ///
     /// # Example
@@ -711,7 +711,7 @@ impl Typ {
     /// assert_eq!(e_type, Typ::event(Typ::bool()));
     ///
     /// assert_eq!(s_type.convert(), Typ::int());
-    /// assert_eq!(e_type.convert(), Typ::sm_event(Typ::bool()));
+    /// assert_eq!(e_type.convert(), Typ::option(Typ::bool()));
     /// ```
     pub fn rev_convert(&self) -> Self {
         match self {
@@ -940,7 +940,7 @@ mod test {
 
     #[test]
     fn should_create_option_from_ir2_state_machine_event() {
-        let typ = Typ::sm_event(Typ::float());
+        let typ = Typ::option(Typ::float());
         let control = parse_quote!(Option<f64>);
         let tokens: syn::Type = parse_quote!(#typ);
         assert_eq!(tokens, control)

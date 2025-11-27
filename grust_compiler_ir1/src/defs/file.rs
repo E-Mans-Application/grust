@@ -22,17 +22,10 @@ impl File {
     ///
     /// - component application as root expression
     /// - no rising edge
-    pub fn is_normal_form(&self) -> bool {
+    fn is_normal_form(&self) -> bool {
         self.components
             .iter()
             .all(|component| component.is_normal_form())
-    }
-
-    /// Tell if there is no component application.
-    pub fn no_comp_application(&self) -> bool {
-        self.components
-            .iter()
-            .all(|component| component.no_comp_application())
     }
 
     /// Check the causality of the file.
@@ -50,7 +43,7 @@ impl File {
     ///
     /// Store buffer for last expressions and component applications.
     /// Transform last expressions in identifier call.
-    pub fn memorize(&mut self, ctx: &mut Ctx) -> URes {
+    fn memorize(&mut self, ctx: &mut Ctx) -> URes {
         for comp in self.components.iter_mut() {
             comp.memorize(ctx)?;
         }
@@ -61,7 +54,7 @@ impl File {
     }
 
     /// Change [ir1] file into a normal form.
-    pub fn normal_form(&mut self, ctx: &mut Ctx) {
+    fn normal_form(&mut self, ctx: &mut Ctx) {
         let mut components_reduced_graphs = HashMap::new();
         // get every components' graphs
         self.components.iter().for_each(|component| {
@@ -84,7 +77,7 @@ impl File {
     /// Inline component application when it is needed.
     ///
     /// Inlining needed for "shifted causality loop".
-    pub fn inline_when_needed(&mut self, ctx: &mut Ctx) {
+    fn inline_when_needed(&mut self, ctx: &mut Ctx) {
         let components = self
             .components
             .iter()
@@ -104,7 +97,7 @@ impl File {
 
     /// Generate dependency graphs for the interface.
     #[inline]
-    pub fn generate_flows_dependency_graphs(&mut self) {
+    fn generate_flows_dependency_graphs(&mut self) {
         self.interface.generate_flows_dependency_graphs()
     }
 

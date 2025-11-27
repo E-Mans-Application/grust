@@ -151,6 +151,7 @@ impl grust::core::Component for PidState {
 }
 pub struct ActivateInput {
     pub acc_active: Option<Activation>,
+    pub change: Option<f64>,
     pub distance_m: f64,
 }
 pub struct ActivateOutput {
@@ -160,8 +161,6 @@ pub struct ActivateState {
     last_active: bool,
     last_approaching: bool,
     last_distance_m: f64,
-    last_x: bool,
-    last_x_1: bool,
 }
 impl grust::core::Component for ActivateState {
     type Input = ActivateInput;
@@ -171,44 +170,36 @@ impl grust::core::Component for ActivateState {
             last_active: false,
             last_approaching: false,
             last_distance_m: 0.0f64,
-            last_x: false,
-            last_x_1: false,
         }
     }
     fn step(&mut self, input: ActivateInput) -> ActivateOutput {
-        let x = input.distance_m < self.last_distance_m;
-        let x_1 = input.distance_m >= self.last_distance_m;
-        let (active, approaching) = match (input.acc_active) {
-            (Some(acc_active)) => {
+        let (active, approaching) = match (input.acc_active, input.change) {
+            (Some(acc_active), _) => {
                 let approaching = self.last_approaching;
                 let active = acc_active == Activation::On;
                 (active, approaching)
             }
-            (_) if x && !(self.last_x) => {
+            (_, Some(change)) if input.distance_m < self.last_distance_m => {
                 let active = self.last_active;
                 let approaching = true;
                 (active, approaching)
             }
-            (_) if x_1 && !(self.last_x_1) => {
+            (_, Some(change)) if input.distance_m >= self.last_distance_m => {
                 let active = self.last_active;
                 let approaching = false;
                 (active, approaching)
             }
-            (_) => {
-                let (active, approaching) = (self.last_active, self.last_approaching);
-                (active, approaching)
-            }
+            (_, _) => (self.last_active, self.last_approaching),
         };
         let condition = active && approaching;
         self.last_active = active;
         self.last_approaching = approaching;
         self.last_distance_m = input.distance_m;
-        self.last_x = x;
-        self.last_x_1 = x_1;
         ActivateOutput { condition }
     }
 }
 pub struct FilteredAccInput {
+    pub clock: Option<f64>,
     pub condition: bool,
     pub distance_m: f64,
     pub sv_v_km_h: f64,
@@ -218,6 +209,9 @@ pub struct FilteredAccOutput {
     pub brakes_m_s: f64,
 }
 pub struct FilteredAccState {
+    last_brakes_command_m_s: f64,
+    last_brakes_m_s: f64,
+    last_x: bool,
     command: CommandState,
     pid: PidState,
 }
@@ -226,13 +220,17 @@ impl grust::core::Component for FilteredAccState {
     type Output = FilteredAccOutput;
     fn init() -> FilteredAccState {
         FilteredAccState {
+            last_brakes_command_m_s: 0.0f64,
+            last_brakes_m_s: 0.0f64,
+            last_x: false,
             command: <CommandState as grust::core::Component>::init(),
             pid: <PidState as grust::core::Component>::init(),
         }
     }
     fn step(&mut self, input: FilteredAccInput) -> FilteredAccOutput {
-        let (brakes_command_m_s, brakes_m_s) = match input.condition {
-            true => {
+        let x = !(input.condition);
+        let (brakes_command_m_s, brakes_m_s) = match (input.clock) {
+            (Some(clock)) if input.condition => {
                 let brakes_command_m_s = {
                     let CommandOutput { brakes_command } =
                         <CommandState as grust::core::Component>::step(
@@ -258,12 +256,16 @@ impl grust::core::Component for FilteredAccState {
                 };
                 (brakes_command_m_s, brakes_m_s)
             }
-            false => {
+            (_) if x && !(self.last_x) => {
                 let brakes_command_m_s = 0.0f64;
                 let brakes_m_s = 0.0f64;
                 (brakes_command_m_s, brakes_m_s)
             }
+            (_) => (self.last_brakes_command_m_s, self.last_brakes_m_s),
         };
+        self.last_brakes_command_m_s = brakes_command_m_s;
+        self.last_brakes_m_s = brakes_m_s;
+        self.last_x = x;
         FilteredAccOutput { brakes_m_s }
     }
 }
@@ -272,9 +274,9 @@ pub mod runtime {
     use grust::futures::{sink::SinkExt, stream::StreamExt};
     #[derive(Debug)]
     pub enum RuntimeInput {
+        SpeedKmH(f64, std::time::Instant),
         DistanceM(f64, std::time::Instant),
         AccActive(Activation, std::time::Instant),
-        SpeedKmH(f64, std::time::Instant),
         Timer(T, std::time::Instant),
     }
     use RuntimeInput as I;
@@ -289,9 +291,9 @@ pub mod runtime {
     impl PartialEq for RuntimeInput {
         fn eq(&self, other: &Self) -> bool {
             match (self, other) {
+                (I::SpeedKmH(this, _), I::SpeedKmH(other, _)) => this.eq(other),
                 (I::DistanceM(this, _), I::DistanceM(other, _)) => this.eq(other),
                 (I::AccActive(this, _), I::AccActive(other, _)) => this.eq(other),
-                (I::SpeedKmH(this, _), I::SpeedKmH(other, _)) => this.eq(other),
                 (I::Timer(this, _), I::Timer(other, _)) => this.eq(other),
                 _ => false,
             }
@@ -300,9 +302,9 @@ pub mod runtime {
     impl RuntimeInput {
         pub fn get_instant(&self) -> std::time::Instant {
             match self {
+                I::SpeedKmH(_, _grust_reserved_instant) => *_grust_reserved_instant,
                 I::DistanceM(_, _grust_reserved_instant) => *_grust_reserved_instant,
                 I::AccActive(_, _grust_reserved_instant) => *_grust_reserved_instant,
-                I::SpeedKmH(_, _grust_reserved_instant) => *_grust_reserved_instant,
                 I::Timer(_, _grust_reserved_instant) => *_grust_reserved_instant,
             }
         }
@@ -317,11 +319,12 @@ pub mod runtime {
     use RuntimeOutput as O;
     #[derive(Debug, Default)]
     pub struct RuntimeInit {
-        pub distance_m: f64,
         pub speed_km_h: f64,
+        pub distance_m: f64,
     }
     #[derive(Debug, PartialEq)]
     pub enum RuntimeTimer {
+        PeriodClock,
         DelayAdaptiveCruiseControl,
         TimeoutAdaptiveCruiseControl,
     }
@@ -329,12 +332,14 @@ pub mod runtime {
     impl grust::core::timer_stream::Timing for RuntimeTimer {
         fn get_duration(&self) -> std::time::Duration {
             match self {
+                T::PeriodClock => std::time::Duration::from_millis(1000u64),
                 T::DelayAdaptiveCruiseControl => std::time::Duration::from_millis(10u64),
                 T::TimeoutAdaptiveCruiseControl => std::time::Duration::from_millis(3000u64),
             }
         }
         fn do_reset(&self) -> bool {
             match self {
+                T::PeriodClock => false,
                 T::DelayAdaptiveCruiseControl => true,
                 T::TimeoutAdaptiveCruiseControl => true,
             }
@@ -382,12 +387,12 @@ pub mod runtime {
             grust::futures::pin_mut!(input);
             let mut runtime = self;
             let RuntimeInit {
-                distance_m,
                 speed_km_h,
+                distance_m,
             } = init_vals;
             runtime
                 .adaptive_cruise_control
-                .handle_init(distance_m, speed_km_h)
+                .handle_init(speed_km_h, distance_m)
                 .await?;
             while let Some(input) = input.next().await {
                 match input {
@@ -401,6 +406,12 @@ pub mod runtime {
                         runtime
                             .adaptive_cruise_control
                             .handle_speed_km_h(_grust_reserved_instant, speed_km_h)
+                            .await?;
+                    }
+                    I::Timer(T::PeriodClock, _grust_reserved_instant) => {
+                        runtime
+                            .adaptive_cruise_control
+                            .handle_period_clock(_grust_reserved_instant)
                             .await?;
                     }
                     I::DistanceM(distance_m, _grust_reserved_instant) => {
@@ -530,6 +541,26 @@ pub mod runtime {
                     self.1 = false;
                 }
             }
+            #[derive(Clone, Copy, PartialEq, Default, Debug)]
+            pub struct XOld(f64, bool);
+            impl XOld {
+                pub fn set(&mut self, x_old: f64) {
+                    self.1 = self.0 != x_old;
+                    self.0 = x_old;
+                }
+                pub fn get(&self) -> f64 {
+                    self.0
+                }
+                pub fn take(&mut self) -> f64 {
+                    std::mem::take(&mut self.0)
+                }
+                pub fn is_new(&self) -> bool {
+                    self.1
+                }
+                pub fn reset(&mut self) {
+                    self.1 = false;
+                }
+            }
         }
         #[derive(Clone, Copy, PartialEq, Default, Debug)]
         pub struct Context {
@@ -538,6 +569,7 @@ pub mod runtime {
             pub t: ctx_ty::T,
             pub brakes_m_s: ctx_ty::BrakesMS,
             pub distance_m: ctx_ty::DistanceM,
+            pub x_old: ctx_ty::XOld,
         }
         impl Context {
             fn init() -> Context {
@@ -549,17 +581,22 @@ pub mod runtime {
                 self.t.reset();
                 self.brakes_m_s.reset();
                 self.distance_m.reset();
+                self.x_old.reset();
             }
         }
         #[derive(Default)]
         pub struct AdaptiveCruiseControlServiceStore {
+            speed_km_h: Option<(f64, std::time::Instant)>,
+            period_clock: Option<((), std::time::Instant)>,
             distance_m: Option<(f64, std::time::Instant)>,
             acc_active: Option<(Activation, std::time::Instant)>,
-            speed_km_h: Option<(f64, std::time::Instant)>,
         }
         impl AdaptiveCruiseControlServiceStore {
             pub fn not_empty(&self) -> bool {
-                self.distance_m.is_some() || self.acc_active.is_some() || self.speed_km_h.is_some()
+                self.speed_km_h.is_some()
+                    || self.period_clock.is_some()
+                    || self.distance_m.is_some()
+                    || self.acc_active.is_some()
             }
         }
         pub struct AdaptiveCruiseControlService {
@@ -596,23 +633,33 @@ pub mod runtime {
             }
             pub async fn handle_init(
                 &mut self,
-                distance_m: f64,
                 speed_km_h: f64,
+                distance_m: f64,
             ) -> Result<(), grust::futures::channel::mpsc::SendError> {
                 let _grust_reserved_instant = self._grust_reserved_init_instant;
                 self.reset_service_timeout(_grust_reserved_instant).await?;
-                self.context.speed_km_h.set(speed_km_h);
+                let clock_ref = &mut None;
                 self.context.distance_m.set(distance_m);
+                self.context.x_old.set(distance_m);
                 let ActivateOutput {
                     condition: condition,
                 } = <ActivateState as grust::core::Component>::step(
                     &mut self.activate,
                     ActivateInput {
                         acc_active: None,
+                        change: None,
                         distance_m: distance_m,
                     },
                 );
                 self.context.condition.set(condition);
+                self.send_timer(T::PeriodClock, _grust_reserved_instant)
+                    .await?;
+                *clock_ref = Some(
+                    (_grust_reserved_instant
+                        .duration_since(self._grust_reserved_init_instant)
+                        .as_millis()) as f64,
+                );
+                self.context.speed_km_h.set(speed_km_h);
                 let t = (_grust_reserved_instant
                     .duration_since(self._grust_reserved_init_instant)
                     .as_millis()) as f64;
@@ -622,6 +669,7 @@ pub mod runtime {
                 } = <FilteredAccState as grust::core::Component>::step(
                     &mut self.filtered_acc,
                     FilteredAccInput {
+                        clock: *clock_ref,
                         condition: self.context.condition.get(),
                         distance_m: distance_m,
                         sv_v_km_h: speed_km_h,
@@ -634,177 +682,6 @@ pub mod runtime {
                     _grust_reserved_instant,
                 )
                 .await?;
-                Ok(())
-            }
-            pub async fn handle_distance_m(
-                &mut self,
-                _distance_m_instant: std::time::Instant,
-                distance_m: f64,
-            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
-                if self.delayed {
-                    self.reset_time_constraints(_distance_m_instant).await?;
-                    self.context.reset();
-                    self.context.distance_m.set(distance_m);
-                    if self.context.distance_m.is_new() {
-                        let ActivateOutput {
-                            condition: condition,
-                        } = <ActivateState as grust::core::Component>::step(
-                            &mut self.activate,
-                            ActivateInput {
-                                acc_active: None,
-                                distance_m: distance_m,
-                            },
-                        );
-                        self.context.condition.set(condition);
-                    }
-                    let t = (_distance_m_instant
-                        .duration_since(self._grust_reserved_init_instant)
-                        .as_millis()) as f64;
-                    self.context.t.set(t);
-                    if self.context.condition.is_new()
-                        || self.context.distance_m.is_new()
-                        || self.context.speed_km_h.is_new()
-                        || self.context.t.is_new()
-                    {
-                        let FilteredAccOutput {
-                            brakes_m_s: brakes_m_s,
-                        } = <FilteredAccState as grust::core::Component>::step(
-                            &mut self.filtered_acc,
-                            FilteredAccInput {
-                                condition: self.context.condition.get(),
-                                distance_m: distance_m,
-                                sv_v_km_h: self.context.speed_km_h.get(),
-                                t_ms: t,
-                            },
-                        );
-                        self.context.brakes_m_s.set(brakes_m_s);
-                    }
-                    if self.context.brakes_m_s.is_new() {
-                        self.send_output(
-                            O::BrakesMS(self.context.brakes_m_s.get(), _distance_m_instant),
-                            _distance_m_instant,
-                        )
-                        .await?;
-                    }
-                } else {
-                    let unique = self
-                        .input_store
-                        .distance_m
-                        .replace((distance_m, _distance_m_instant));
-                    assert ! (unique . is_none () , "flow `distance_m` changes twice within one minimal delay of the service, consider reducing this delay");
-                }
-                Ok(())
-            }
-            pub async fn handle_timeout_adaptive_cruise_control(
-                &mut self,
-                _timeout_adaptive_cruise_control_instant: std::time::Instant,
-            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
-                self.reset_time_constraints(_timeout_adaptive_cruise_control_instant)
-                    .await?;
-                self.context.reset();
-                let t = (_timeout_adaptive_cruise_control_instant
-                    .duration_since(self._grust_reserved_init_instant)
-                    .as_millis()) as f64;
-                self.context.t.set(t);
-                if self.context.condition.is_new()
-                    || self.context.distance_m.is_new()
-                    || self.context.speed_km_h.is_new()
-                    || self.context.t.is_new()
-                {
-                    let FilteredAccOutput {
-                        brakes_m_s: brakes_m_s,
-                    } = <FilteredAccState as grust::core::Component>::step(
-                        &mut self.filtered_acc,
-                        FilteredAccInput {
-                            condition: self.context.condition.get(),
-                            distance_m: self.context.distance_m.get(),
-                            sv_v_km_h: self.context.speed_km_h.get(),
-                            t_ms: t,
-                        },
-                    );
-                    self.context.brakes_m_s.set(brakes_m_s);
-                }
-                self.send_output(
-                    O::BrakesMS(
-                        self.context.brakes_m_s.get(),
-                        _timeout_adaptive_cruise_control_instant,
-                    ),
-                    _timeout_adaptive_cruise_control_instant,
-                )
-                .await?;
-                Ok(())
-            }
-            #[inline]
-            pub async fn reset_service_timeout(
-                &mut self,
-                _timeout_adaptive_cruise_control_instant: std::time::Instant,
-            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
-                self.timer
-                    .send((
-                        T::TimeoutAdaptiveCruiseControl,
-                        _timeout_adaptive_cruise_control_instant,
-                    ))
-                    .await?;
-                Ok(())
-            }
-            pub async fn handle_acc_active(
-                &mut self,
-                _acc_active_instant: std::time::Instant,
-                acc_active: Activation,
-            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
-                if self.delayed {
-                    self.reset_time_constraints(_acc_active_instant).await?;
-                    self.context.reset();
-                    let acc_active_ref = &mut None;
-                    *acc_active_ref = Some(acc_active);
-                    if acc_active_ref.is_some() || self.context.distance_m.is_new() {
-                        let ActivateOutput {
-                            condition: condition,
-                        } = <ActivateState as grust::core::Component>::step(
-                            &mut self.activate,
-                            ActivateInput {
-                                acc_active: *acc_active_ref,
-                                distance_m: self.context.distance_m.get(),
-                            },
-                        );
-                        self.context.condition.set(condition);
-                    }
-                    let t = (_acc_active_instant
-                        .duration_since(self._grust_reserved_init_instant)
-                        .as_millis()) as f64;
-                    self.context.t.set(t);
-                    if self.context.condition.is_new()
-                        || self.context.distance_m.is_new()
-                        || self.context.speed_km_h.is_new()
-                        || self.context.t.is_new()
-                    {
-                        let FilteredAccOutput {
-                            brakes_m_s: brakes_m_s,
-                        } = <FilteredAccState as grust::core::Component>::step(
-                            &mut self.filtered_acc,
-                            FilteredAccInput {
-                                condition: self.context.condition.get(),
-                                distance_m: self.context.distance_m.get(),
-                                sv_v_km_h: self.context.speed_km_h.get(),
-                                t_ms: t,
-                            },
-                        );
-                        self.context.brakes_m_s.set(brakes_m_s);
-                    }
-                    if self.context.brakes_m_s.is_new() {
-                        self.send_output(
-                            O::BrakesMS(self.context.brakes_m_s.get(), _acc_active_instant),
-                            _acc_active_instant,
-                        )
-                        .await?;
-                    }
-                } else {
-                    let unique = self
-                        .input_store
-                        .acc_active
-                        .replace((acc_active, _acc_active_instant));
-                    assert ! (unique . is_none () , "flow `acc_active` changes twice within one minimal delay of the service, consider reducing this delay");
-                }
                 Ok(())
             }
             pub async fn handle_speed_km_h(
@@ -830,6 +707,7 @@ pub mod runtime {
                         } = <FilteredAccState as grust::core::Component>::step(
                             &mut self.filtered_acc,
                             FilteredAccInput {
+                                clock: None,
                                 condition: self.context.condition.get(),
                                 distance_m: self.context.distance_m.get(),
                                 sv_v_km_h: speed_km_h,
@@ -854,37 +732,89 @@ pub mod runtime {
                 }
                 Ok(())
             }
-            pub async fn handle_delay_adaptive_cruise_control(
+            pub async fn handle_period_clock(
                 &mut self,
-                _grust_reserved_instant: std::time::Instant,
+                _period_clock_instant: std::time::Instant,
             ) -> Result<(), grust::futures::channel::mpsc::SendError> {
-                self.context.reset();
-                if self.input_store.not_empty() {
-                    self.reset_time_constraints(_grust_reserved_instant).await?;
-                    let acc_active_ref = &mut None;
-                    let _speed_km_h_input_store = self.input_store.speed_km_h.take();
-                    if let Some((speed_km_h, _)) = _speed_km_h_input_store {
-                        self.context.speed_km_h.set(speed_km_h);
+                if self.delayed {
+                    self.reset_time_constraints(_period_clock_instant).await?;
+                    self.context.reset();
+                    let clock_ref = &mut None;
+                    self.send_timer(T::PeriodClock, _period_clock_instant)
+                        .await?;
+                    *clock_ref = Some(
+                        (_period_clock_instant
+                            .duration_since(self._grust_reserved_init_instant)
+                            .as_millis()) as f64,
+                    );
+                    let t = (_period_clock_instant
+                        .duration_since(self._grust_reserved_init_instant)
+                        .as_millis()) as f64;
+                    self.context.t.set(t);
+                    if clock_ref.is_some()
+                        || self.context.condition.is_new()
+                        || self.context.distance_m.is_new()
+                        || self.context.speed_km_h.is_new()
+                        || self.context.t.is_new()
+                    {
+                        let FilteredAccOutput {
+                            brakes_m_s: brakes_m_s,
+                        } = <FilteredAccState as grust::core::Component>::step(
+                            &mut self.filtered_acc,
+                            FilteredAccInput {
+                                clock: *clock_ref,
+                                condition: self.context.condition.get(),
+                                distance_m: self.context.distance_m.get(),
+                                sv_v_km_h: self.context.speed_km_h.get(),
+                                t_ms: t,
+                            },
+                        );
+                        self.context.brakes_m_s.set(brakes_m_s);
                     }
-                    let _acc_active_input_store = self.input_store.acc_active.take();
-                    *acc_active_ref = _acc_active_input_store.map(|(x, _)| x);
-                    let _distance_m_input_store = self.input_store.distance_m.take();
-                    if let Some((distance_m, _)) = _distance_m_input_store {
-                        self.context.distance_m.set(distance_m);
+                    if self.context.brakes_m_s.is_new() {
+                        self.send_output(
+                            O::BrakesMS(self.context.brakes_m_s.get(), _period_clock_instant),
+                            _period_clock_instant,
+                        )
+                        .await?;
                     }
-                    if acc_active_ref.is_some() || self.context.distance_m.is_new() {
+                } else {
+                    let unique = self
+                        .input_store
+                        .period_clock
+                        .replace(((), _period_clock_instant));
+                    assert ! (unique . is_none () , "flow `period_clock` changes twice within one minimal delay of the service, consider reducing this delay");
+                }
+                Ok(())
+            }
+            pub async fn handle_distance_m(
+                &mut self,
+                _distance_m_instant: std::time::Instant,
+                distance_m: f64,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                if self.delayed {
+                    self.reset_time_constraints(_distance_m_instant).await?;
+                    self.context.reset();
+                    let x_ref = &mut None;
+                    self.context.distance_m.set(distance_m);
+                    if self.context.x_old.get() != distance_m {
+                        self.context.x_old.set(distance_m);
+                        *x_ref = Some(distance_m);
+                    }
+                    if x_ref.is_some() || self.context.distance_m.is_new() {
                         let ActivateOutput {
                             condition: condition,
                         } = <ActivateState as grust::core::Component>::step(
                             &mut self.activate,
                             ActivateInput {
-                                acc_active: *acc_active_ref,
-                                distance_m: self.context.distance_m.get(),
+                                acc_active: None,
+                                change: *x_ref,
+                                distance_m: distance_m,
                             },
                         );
                         self.context.condition.set(condition);
                     }
-                    let t = (_grust_reserved_instant
+                    let t = (_distance_m_instant
                         .duration_since(self._grust_reserved_init_instant)
                         .as_millis()) as f64;
                     self.context.t.set(t);
@@ -898,6 +828,98 @@ pub mod runtime {
                         } = <FilteredAccState as grust::core::Component>::step(
                             &mut self.filtered_acc,
                             FilteredAccInput {
+                                clock: None,
+                                condition: self.context.condition.get(),
+                                distance_m: distance_m,
+                                sv_v_km_h: self.context.speed_km_h.get(),
+                                t_ms: t,
+                            },
+                        );
+                        self.context.brakes_m_s.set(brakes_m_s);
+                    }
+                    if self.context.brakes_m_s.is_new() {
+                        self.send_output(
+                            O::BrakesMS(self.context.brakes_m_s.get(), _distance_m_instant),
+                            _distance_m_instant,
+                        )
+                        .await?;
+                    }
+                } else {
+                    let unique = self
+                        .input_store
+                        .distance_m
+                        .replace((distance_m, _distance_m_instant));
+                    assert ! (unique . is_none () , "flow `distance_m` changes twice within one minimal delay of the service, consider reducing this delay");
+                }
+                Ok(())
+            }
+            pub async fn handle_delay_adaptive_cruise_control(
+                &mut self,
+                _grust_reserved_instant: std::time::Instant,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                self.context.reset();
+                if self.input_store.not_empty() {
+                    self.reset_time_constraints(_grust_reserved_instant).await?;
+                    let period_clock_ref = &mut None;
+                    let clock_ref = &mut None;
+                    let x_ref = &mut None;
+                    let acc_active_ref = &mut None;
+                    let _acc_active_input_store = self.input_store.acc_active.take();
+                    *acc_active_ref = _acc_active_input_store.map(|(x, _)| x);
+                    let _distance_m_input_store = self.input_store.distance_m.take();
+                    if let Some((distance_m, _)) = _distance_m_input_store {
+                        self.context.distance_m.set(distance_m);
+                    }
+                    if self.context.x_old.get() != self.context.distance_m.get() {
+                        self.context.x_old.set(self.context.distance_m.get());
+                        *x_ref = Some(self.context.distance_m.get());
+                    }
+                    if acc_active_ref.is_some()
+                        || x_ref.is_some()
+                        || self.context.distance_m.is_new()
+                    {
+                        let ActivateOutput {
+                            condition: condition,
+                        } = <ActivateState as grust::core::Component>::step(
+                            &mut self.activate,
+                            ActivateInput {
+                                acc_active: *acc_active_ref,
+                                change: *x_ref,
+                                distance_m: self.context.distance_m.get(),
+                            },
+                        );
+                        self.context.condition.set(condition);
+                    }
+                    let _period_clock_input_store = self.input_store.period_clock.take();
+                    if let Some((_, _period_clock_instant)) = _period_clock_input_store {
+                        self.send_timer(T::PeriodClock, _period_clock_instant)
+                            .await?;
+                    }
+                    *period_clock_ref = _period_clock_input_store.map(|(x, _)| x);
+                    *clock_ref = _period_clock_input_store.map(|(_, y)| {
+                        (y.duration_since(self._grust_reserved_init_instant)
+                            .as_millis()) as f64
+                    });
+                    let _speed_km_h_input_store = self.input_store.speed_km_h.take();
+                    if let Some((speed_km_h, _)) = _speed_km_h_input_store {
+                        self.context.speed_km_h.set(speed_km_h);
+                    }
+                    let t = (_grust_reserved_instant
+                        .duration_since(self._grust_reserved_init_instant)
+                        .as_millis()) as f64;
+                    self.context.t.set(t);
+                    if clock_ref.is_some()
+                        || self.context.condition.is_new()
+                        || self.context.distance_m.is_new()
+                        || self.context.speed_km_h.is_new()
+                        || self.context.t.is_new()
+                    {
+                        let FilteredAccOutput {
+                            brakes_m_s: brakes_m_s,
+                        } = <FilteredAccState as grust::core::Component>::step(
+                            &mut self.filtered_acc,
+                            FilteredAccInput {
+                                clock: *clock_ref,
                                 condition: self.context.condition.get(),
                                 distance_m: self.context.distance_m.get(),
                                 sv_v_km_h: self.context.speed_km_h.get(),
@@ -927,6 +949,121 @@ pub mod runtime {
                     .send((T::DelayAdaptiveCruiseControl, _grust_reserved_instant))
                     .await?;
                 self.delayed = false;
+                Ok(())
+            }
+            pub async fn handle_acc_active(
+                &mut self,
+                _acc_active_instant: std::time::Instant,
+                acc_active: Activation,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                if self.delayed {
+                    self.reset_time_constraints(_acc_active_instant).await?;
+                    self.context.reset();
+                    let acc_active_ref = &mut None;
+                    *acc_active_ref = Some(acc_active);
+                    if acc_active_ref.is_some() || self.context.distance_m.is_new() {
+                        let ActivateOutput {
+                            condition: condition,
+                        } = <ActivateState as grust::core::Component>::step(
+                            &mut self.activate,
+                            ActivateInput {
+                                acc_active: *acc_active_ref,
+                                change: None,
+                                distance_m: self.context.distance_m.get(),
+                            },
+                        );
+                        self.context.condition.set(condition);
+                    }
+                    let t = (_acc_active_instant
+                        .duration_since(self._grust_reserved_init_instant)
+                        .as_millis()) as f64;
+                    self.context.t.set(t);
+                    if self.context.condition.is_new()
+                        || self.context.distance_m.is_new()
+                        || self.context.speed_km_h.is_new()
+                        || self.context.t.is_new()
+                    {
+                        let FilteredAccOutput {
+                            brakes_m_s: brakes_m_s,
+                        } = <FilteredAccState as grust::core::Component>::step(
+                            &mut self.filtered_acc,
+                            FilteredAccInput {
+                                clock: None,
+                                condition: self.context.condition.get(),
+                                distance_m: self.context.distance_m.get(),
+                                sv_v_km_h: self.context.speed_km_h.get(),
+                                t_ms: t,
+                            },
+                        );
+                        self.context.brakes_m_s.set(brakes_m_s);
+                    }
+                    if self.context.brakes_m_s.is_new() {
+                        self.send_output(
+                            O::BrakesMS(self.context.brakes_m_s.get(), _acc_active_instant),
+                            _acc_active_instant,
+                        )
+                        .await?;
+                    }
+                } else {
+                    let unique = self
+                        .input_store
+                        .acc_active
+                        .replace((acc_active, _acc_active_instant));
+                    assert ! (unique . is_none () , "flow `acc_active` changes twice within one minimal delay of the service, consider reducing this delay");
+                }
+                Ok(())
+            }
+            pub async fn handle_timeout_adaptive_cruise_control(
+                &mut self,
+                _timeout_adaptive_cruise_control_instant: std::time::Instant,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                self.reset_time_constraints(_timeout_adaptive_cruise_control_instant)
+                    .await?;
+                self.context.reset();
+                let t = (_timeout_adaptive_cruise_control_instant
+                    .duration_since(self._grust_reserved_init_instant)
+                    .as_millis()) as f64;
+                self.context.t.set(t);
+                if self.context.condition.is_new()
+                    || self.context.distance_m.is_new()
+                    || self.context.speed_km_h.is_new()
+                    || self.context.t.is_new()
+                {
+                    let FilteredAccOutput {
+                        brakes_m_s: brakes_m_s,
+                    } = <FilteredAccState as grust::core::Component>::step(
+                        &mut self.filtered_acc,
+                        FilteredAccInput {
+                            clock: None,
+                            condition: self.context.condition.get(),
+                            distance_m: self.context.distance_m.get(),
+                            sv_v_km_h: self.context.speed_km_h.get(),
+                            t_ms: t,
+                        },
+                    );
+                    self.context.brakes_m_s.set(brakes_m_s);
+                }
+                self.send_output(
+                    O::BrakesMS(
+                        self.context.brakes_m_s.get(),
+                        _timeout_adaptive_cruise_control_instant,
+                    ),
+                    _timeout_adaptive_cruise_control_instant,
+                )
+                .await?;
+                Ok(())
+            }
+            #[inline]
+            pub async fn reset_service_timeout(
+                &mut self,
+                _timeout_adaptive_cruise_control_instant: std::time::Instant,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                self.timer
+                    .send((
+                        T::TimeoutAdaptiveCruiseControl,
+                        _timeout_adaptive_cruise_control_instant,
+                    ))
+                    .await?;
                 Ok(())
             }
             #[inline]
@@ -965,8 +1102,8 @@ pub fn run(
     input_stream: impl Stream<Item = runtime::RuntimeInput> + Send + 'static,
     init_signals: runtime::RuntimeInit,
 ) -> grust::futures::channel::mpsc::Receiver<runtime::RuntimeOutput> {
-    const TIMER_CHANNEL_SIZE: usize = 2usize + 2;
-    const TIMER_STREAM_SIZE: usize = 2usize + 2;
+    const TIMER_CHANNEL_SIZE: usize = 3usize + 2;
+    const TIMER_STREAM_SIZE: usize = 3usize + 2;
     let (timers_sink, timers_stream) = grust::futures::channel::mpsc::channel(TIMER_CHANNEL_SIZE);
     let timers_stream =
         grust::core::timer_stream::timer_stream::<_, _, TIMER_STREAM_SIZE>(timers_stream)

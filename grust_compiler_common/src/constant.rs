@@ -182,6 +182,12 @@ impl Constant {
             Constant::Default(_) => Typ::Any,
         }
     }
+
+    /// Get the [ReactTyp] of the constant.
+    pub fn get_react_typ(&self) -> ReactTyp {
+        ReactTyp::d()
+    }
+
     pub fn peek(input: ParseStream) -> bool {
         input.peek(LitInt) || input.peek(LitFloat) || input.peek(LitBool) || {
             (|| {

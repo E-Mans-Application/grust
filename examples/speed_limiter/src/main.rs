@@ -121,6 +121,7 @@ mod sl {
             failure: Failure?,
             speed: float,
             v_set: float,
+            clock: float?,
         ) -> (
             state: SpeedLimiter,
             on_state: SpeedLimiterOn,
@@ -129,7 +130,6 @@ mod sl {
         ) {
             let prev_state: SpeedLimiter = last state;
             let prev_on_state: SpeedLimiterOn = last on_state;
-            init on_state = SpeedLimiterOn::StandBy;
             state = when {
                 init => SpeedLimiter::Off,
                 activation_req? if activation_req == ActivationRequest::Off => SpeedLimiter::Off,
@@ -137,19 +137,28 @@ mod sl {
                 failure? if failure == Failure::Entering => SpeedLimiter::Fail,
                 let f = failure? if f == Failure::Recovered && prev_state == SpeedLimiter::Fail => SpeedLimiter::On,
             };
-            match prev_state {
-                SpeedLimiter::On => {
-                    (on_state, in_regulation, state_update) = speed_limiter_on(
-                        prev_on_state,
-                        vacuum_brake_state,
-                        kickdown, speed, v_set,
-                    );
-                },
-                _ => {
+            when {
+                init => {
                     on_state = SpeedLimiterOn::StandBy;
-                    in_regulation = false;
-                    state_update = prev_state != state;
-                },
+                    in_regulation = true;
+                    state_update = true;
+                }
+                clock? => {
+                    match prev_state {
+                        SpeedLimiter::On => {
+                            (on_state, in_regulation, state_update) = speed_limiter_on(
+                                prev_on_state,
+                                vacuum_brake_state,
+                                kickdown, speed, v_set,
+                            );
+                        },
+                        _ => {
+                            on_state = SpeedLimiterOn::StandBy;
+                            in_regulation = false;
+                            state_update = prev_state != state;
+                        },
+                    }
+                }
             }
         }
 
@@ -204,6 +213,7 @@ mod sl {
 
         service speed_limiter {
             let event changed_set_speed: float = on_change(throttle(set_speed, 1.0));
+            let event clock: float = period(1000);
 
             let (signal v_set_aux: float, signal v_update: bool) = process_set_speed(changed_set_speed);
             let (
@@ -218,6 +228,7 @@ mod sl {
                 failure,
                 speed,
                 v_set,
+                clock,
             );
             v_set = v_set_aux;
             in_regulation = on_change(in_regulation_aux);

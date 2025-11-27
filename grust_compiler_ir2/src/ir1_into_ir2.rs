@@ -609,17 +609,9 @@ impl Ir1IntoIr2<&'_ ir0::Ctx> for ir1::Pattern {
                     .map(|element| element.into_ir2(ctx))
                     .collect(),
             },
-            Kind::Some { pattern } => Pattern::Some {
-                pattern: Box::new(pattern.into_ir2(ctx)),
-            },
-            Kind::None => Pattern::None,
             Kind::Default(loc) => Pattern::Default(loc),
             Kind::PresentEvent { event_id, pattern } => match ctx.get_typ(event_id) {
                 Typ::Option { .. } => Pattern::some(pattern.into_ir2(ctx)),
-                _ => noErrorDesc!(),
-            },
-            Kind::NoEvent { event_id } => match ctx.get_typ(event_id) {
-                Typ::Option { .. } => Pattern::none(),
                 _ => noErrorDesc!(),
             },
         }
@@ -747,7 +739,7 @@ impl Ir1IntoIr2<&'_ ir0::Ctx> for ir1::stream::Expr {
                 let name = ctx.get_name(ident_id).clone();
                 ir2::Expr::MemoryAccess { identifier: name }
             }
-            RisingEdge { .. } => noErrorDesc!(),
+            WhenExpr { .. } | RisingEdge { .. } => noErrorDesc!(),
         }
     }
 

@@ -47,6 +47,10 @@ impl Function {
         }
     }
 
+    pub fn get_id(&self) -> usize {
+        self.id
+    }
+
     pub fn new_ext(id: usize, path: syn::Path, loc: Loc) -> Self {
         Self {
             id,

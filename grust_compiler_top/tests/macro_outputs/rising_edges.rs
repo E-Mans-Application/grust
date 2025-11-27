@@ -32,46 +32,49 @@ impl grust::core::Component for RisingEdgesState {
     fn step(&mut self, input: RisingEdgesInput) -> RisingEdgesOutput {
         let x_1 = input.v > 50i64;
         let w = match () {
-            () if x_1 && !(self.last_x_1) => Some(input.v + self.last_c),
+            () if x_1 && !(self.last_x_1) => {
+                let w = Some(input.v + self.last_c);
+                w
+            }
             () => None,
         };
         let c = match (w, input.a) {
-            (Some(w), _) => w,
-            (_, Some(a)) => a,
-            (_, _) => {
-                let c = self.last_c;
+            (Some(w), _) => {
+                let c = w;
                 c
             }
+            (_, Some(a)) => {
+                let c = a;
+                c
+            }
+            (_, _) => self.last_c,
         };
         let x_3 = input.v < 40i64;
         let x_2 = input.v > 50i64;
         let (z, y, x) = match (input.a, input.b) {
             (Some(a), Some(e)) if x_2 && !(self.last_x_2) => {
-                let y = Some(());
                 let z = if input.v > 80i64 { e } else { a };
+                let y = Some(());
                 (z, y, None)
             }
             (Some(a), _) if (a != 0i64) && (x_3 && !(self.last_x_3)) => {
-                let x = Some(2i64);
                 let z = 2i64;
+                let x = Some(2i64);
                 (z, None, x)
             }
             (_, Some(e)) if e < 20i64 => {
-                let x = Some(2i64);
                 let z = self.last_z;
+                let x = Some(2i64);
                 (z, None, x)
             }
-            (_, _) => {
-                let z = self.last_z;
-                (z, None, None)
-            }
+            (_, _) => (self.last_z, None, None),
         };
         let d = match (y) {
-            (Some(_)) => 0.1f64,
-            (_) => {
-                let d = self.last_d;
+            (Some(_)) => {
+                let d = 0.1f64;
                 d
             }
+            (_) => self.last_d,
         };
         self.last_c = c;
         self.last_d = d;

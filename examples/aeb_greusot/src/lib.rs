@@ -35,15 +35,20 @@ grust! {
         return response;
     }
 
-    component braking_state(pedest: int?, timeout_pedestrian: unit?, speed: int) -> (state: Braking)
+    component braking_state(pedest: int?, timeout_pedest: unit?, speed: int) -> (state: Braking)
         requires { 0 <= speed && speed < 50 } // urban limit
         ensures  { when p = pedest? => state != Braking::NoBrake } // safety
     {
         when {
-            init                                                              => { state = Braking::NoBrake;   }
-            let d = pedest?                                                   => { state = brakes(d, speed);   }
-            let _ = timeout_pedestrian? if last state == Braking::UrgentBrake => { state = Braking::SoftBrake; }
-            let _ = timeout_pedestrian?                                       => { state = Braking::NoBrake;   }
+            init => {
+                state = Braking::NoBrake;
+            }
+            let d = pedest? => {
+                state = brakes(d, speed);
+            }
+            let _ = timeout_pedest? => {
+                state = Braking::NoBrake;
+            }
         }
     }
 }

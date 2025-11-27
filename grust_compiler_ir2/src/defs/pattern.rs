@@ -48,8 +48,6 @@ pub enum Pattern {
         /// The pattern matching the value.
         pattern: Box<Pattern>,
     },
-    /// None pattern, matches when the optional does not have a value.
-    None,
     /// The default pattern that matches anything.
     Default(Loc),
 }
@@ -71,7 +69,6 @@ mk_new! { impl Pattern =>
     Ok: ok { pattern: Self = Box::new(pattern) }
     Err: err()
     Some: some { pattern: Self = Box::new(pattern) }
-    None: none()
     Default: default(
         loc: impl Into<Loc> = loc.into(),
     )
@@ -96,7 +93,6 @@ impl ToTokens for Pattern {
             Pattern::Ok { pattern } => tokens.extend(quote! { Ok(#pattern) }),
             Pattern::Err => tokens.extend(quote! { Err(()) }),
             Pattern::Some { pattern } => tokens.extend(quote! { Some(#pattern) }),
-            Pattern::None => tokens.extend(quote! { None }),
             Pattern::Structure { path, fields } => {
                 let fields = fields.iter().map(|(name, pattern)| quote!(#name: #pattern));
                 tokens.extend(quote! {
@@ -128,14 +124,6 @@ mod test {
     fn should_create_a_rust_ast_default_pattern_from_a_ir2_default_pattern() {
         let pattern = Pattern::Default(Loc::test_dummy());
         let control = parse_quote! { _ };
-        let pat: syn::Pat = parse_quote! { #pattern };
-        assert_eq!(pat, control)
-    }
-
-    #[test]
-    fn should_create_a_rust_ast_default_pattern_from_a_ir2_none_pattern() {
-        let pattern = Pattern::None;
-        let control = parse_quote! { None };
         let pat: syn::Pat = parse_quote! { #pattern };
         assert_eq!(pat, control)
     }

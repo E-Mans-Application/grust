@@ -141,6 +141,7 @@ async fn main() {
     let input_stream = read_stream.filter_map(move |input: Result<(u64, Input), _>| async move {
         match input {
             Ok((timestamp, input)) => {
+                println!("\tinput: {input:?}");
                 let duration = tokio::time::Duration::from_millis(timestamp as u64);
                 let instant = INIT + duration;
                 // sleep to model the arrival of inputs

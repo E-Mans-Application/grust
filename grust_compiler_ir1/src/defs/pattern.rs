@@ -2,7 +2,7 @@
 
 prelude! {}
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 /// Pattern kind.
 pub enum Kind {
     /// Identifier pattern, gives a name to the matching expression.
@@ -29,6 +29,13 @@ pub enum Kind {
         /// The element id.
         elem_id: usize,
     },
+    /// Tuple pattern that matches tuples.
+    Tuple {
+        /// The elements of the tuple.
+        elements: Vec<Pattern>,
+    },
+    /// The default pattern that matches anything.
+    Default(Loc),
     /// Event pattern.
     PresentEvent {
         /// The event id.
@@ -36,25 +43,6 @@ pub enum Kind {
         /// The pattern matching the event.
         pattern: Box<Pattern>,
     },
-    /// NoEvent pattern.
-    NoEvent {
-        /// The event id.
-        event_id: usize,
-    },
-    /// Tuple pattern that matches tuples.
-    Tuple {
-        /// The elements of the tuple.
-        elements: Vec<Pattern>,
-    },
-    /// Some pattern that matches when an optional has a value which match the pattern.
-    Some {
-        /// The pattern matching the value.
-        pattern: Box<Pattern>,
-    },
-    /// None pattern, matches when the optional does not have a value.
-    None,
-    /// The default pattern that matches anything.
-    Default(Loc),
 }
 
 mk_new! { impl Kind =>
@@ -68,21 +56,18 @@ mk_new! { impl Kind =>
         enum_id: usize,
         elem_id: usize,
     }
+    Tuple: tuple { elements: Vec<Pattern> }
+    Default: default(
+        loc: impl Into<Loc> = loc.into(),
+    )
     PresentEvent: present {
         event_id: usize,
         pattern: Pattern = pattern.into(),
     }
-    NoEvent: absent { event_id: usize }
-    Tuple: tuple { elements: Vec<Pattern> }
-    Some: some { pattern: Pattern = pattern.into() }
-    None: none {}
-    Default: default(
-        loc: impl Into<Loc> = loc.into(),
-    )
 }
 
 /// Pattern.
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Pattern {
     /// Pattern kind.
     pub kind: Kind,
@@ -121,11 +106,7 @@ impl Pattern {
     pub fn identifiers(&self) -> Vec<usize> {
         match &self.kind {
             Kind::Identifier { id } => vec![*id],
-            Kind::Constant { .. }
-            | Kind::Enumeration { .. }
-            | Kind::NoEvent { .. }
-            | Kind::None
-            | Kind::Default(_) => vec![],
+            Kind::Constant { .. } | Kind::Enumeration { .. } | Kind::Default(_) => vec![],
             Kind::Structure { fields, .. } => fields
                 .iter()
                 .flat_map(|(id, optional_pattern)| {
@@ -140,18 +121,14 @@ impl Pattern {
                 .iter()
                 .flat_map(|pattern| pattern.identifiers())
                 .collect(),
-            Kind::Some { pattern } | Kind::PresentEvent { pattern, .. } => pattern.identifiers(),
+            Kind::PresentEvent { pattern, .. } => pattern.identifiers(),
         }
     }
     /// Get mutable references to pattern's identifiers.
     pub fn identifiers_mut(&mut self) -> Vec<&mut usize> {
         match &mut self.kind {
             Kind::Identifier { id } => vec![id],
-            Kind::Constant { .. }
-            | Kind::Enumeration { .. }
-            | Kind::NoEvent { .. }
-            | Kind::None
-            | Kind::Default(_) => vec![],
+            Kind::Constant { .. } | Kind::Enumeration { .. } | Kind::Default(_) => vec![],
             Kind::Structure { fields, .. } => fields
                 .iter_mut()
                 .flat_map(|(id, optional_pattern)| {
@@ -166,9 +143,7 @@ impl Pattern {
                 .iter_mut()
                 .flat_map(|pattern| pattern.identifiers_mut())
                 .collect(),
-            Kind::Some { pattern } | Kind::PresentEvent { pattern, .. } => {
-                pattern.identifiers_mut()
-            }
+            Kind::PresentEvent { pattern, .. } => pattern.identifiers_mut(),
         }
     }
 }

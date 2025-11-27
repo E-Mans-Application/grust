@@ -35,14 +35,16 @@ fn should_compile_aeb_time_persist() {
             return response;
         }
 
-        component derive(v_km_h: float, t: float) -> (a_km_h: float) {
+        component derive_on(v_km_h: float, clock: float?) -> (a_km_h: float) {
+            init v = 0.;
             let v: float = v_km_h / 3.6;
-            init (t, v) = (0., 0.);
-            let dt: float = t - (last t);
-            let a: float = when {
-                init => 0.,
-                dt > 10. => (v - (last v))/dt,
-            };
+            when {
+                init => { a = 0.; mem_t = 0.; }
+                let t = clock? => {
+                    let a: float = (v - last v)/(mem_t - last mem_t);
+                    let mem_t: float = t;
+                }
+            }
             a_km_h = 3.6 * a;
         }
 
@@ -67,7 +69,7 @@ fn should_compile_aeb_time_persist() {
             let signal speed_km_h_bis: float = persist(speed_km_h);
             let event pedestrian: float = merge(pedestrian_l, pedestrian_r);
             let event timeout_pedest: unit = timeout(pedestrian, 2000);
-            let signal acc_km_h: float = derive(speed_km_h_bis, time());
+            let signal acc_km_h: float = derive_on(speed_km_h_bis, period(10));
             brakes = braking_state(pedestrian, timeout_pedest, speed_km_h_bis, acc_km_h);
         }
     };

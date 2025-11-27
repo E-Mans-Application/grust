@@ -37,13 +37,16 @@ mod aeb {
             return response;
         }
 
-        component braking_state(pedest: float?, timeout_pedestrian: unit?, speed: float) -> (state: Braking) {
-            when {
-                init                                                              => { state = Braking::NoBrake;   }
-                let d = pedest?                                                   => { state = brakes(d, speed);   }
-                let _ = timeout_pedestrian? if last state == Braking::UrgentBrake => { state = Braking::SoftBrake; }
-                let _ = timeout_pedestrian?                                       => { state = Braking::NoBrake;   }
-            }
+        component braking_state(pedest: float?, timeout_pedestrian: unit?, speed: float)
+                            -> (state: Braking)
+            requires { 0. <= speed && speed < 55. } // urban limit
+            ensures { when _x = pedest? => state != Braking::NoBrake } // safety
+        {
+            state = when {
+                init                        => Braking::NoBrake,
+                let d = pedest?             => brakes(d, speed),
+                let _ = timeout_pedestrian? => Braking::NoBrake,
+            };
         }
 
         service aeb @ [10, 3000] {
@@ -54,9 +57,7 @@ mod aeb {
     }
 }
 
-
 use aeb::{
-    run,
     runtime::{RuntimeInit, RuntimeInput, RuntimeOutput},
     Braking,
 };
@@ -69,45 +70,34 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 /// JSON input type, without timestamp.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, std::fmt::Debug)]
 #[serde(tag = "variant", content = "value")]
 pub enum Input {
     PedestrianL(f64),
     PedestrianR(f64),
     SpeedKmH(f64),
 }
-impl From<(Instant, Input)> for RuntimeInput {
-    fn from(value: (Instant, Input)) -> Self {
-        match value {
-            (instant, Input::PedestrianL(val)) => RuntimeInput::PedestrianL(val, instant),
-            (instant, Input::PedestrianR(val)) => RuntimeInput::PedestrianR(val, instant),
-            (instant, Input::SpeedKmH(val)) => RuntimeInput::SpeedKmH(val, instant),
+impl Input {
+    fn into(self, instant: Instant) -> RuntimeInput {
+        match self {
+            Input::PedestrianL(val) => RuntimeInput::PedestrianL(val, instant),
+            Input::PedestrianR(val) => RuntimeInput::PedestrianR(val, instant),
+            Input::SpeedKmH(val) => RuntimeInput::SpeedKmH(val, instant),
         }
     }
 }
 
 /// JSON output type, without timestamp.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, std::fmt::Debug)]
 pub enum Output {
     Brakes(usize),
 }
-#[derive(Serialize, Debug)]
-pub struct TimedOutput(u64, Output);
-impl From<(Instant, RuntimeOutput)> for TimedOutput {
-    fn from(value: (Instant, RuntimeOutput)) -> Self {
+impl From<RuntimeOutput> for Output {
+    fn from(value: RuntimeOutput) -> Self {
         match value {
-            (INIT, RuntimeOutput::Brakes(Braking::NoBrake, instant)) => TimedOutput(
-                instant.duration_since(INIT).as_millis() as u64,
-                Output::Brakes(0),
-            ),
-            (INIT, RuntimeOutput::Brakes(Braking::SoftBrake, instant)) => TimedOutput(
-                instant.duration_since(INIT).as_millis() as u64,
-                Output::Brakes(1),
-            ),
-            (INIT, RuntimeOutput::Brakes(Braking::UrgentBrake, instant)) => TimedOutput(
-                instant.duration_since(INIT).as_millis() as u64,
-                Output::Brakes(2),
-            ),
+            RuntimeOutput::Brakes(Braking::NoBrake, _) => Output::Brakes(0),
+            RuntimeOutput::Brakes(Braking::SoftBrake, _) => Output::Brakes(1),
+            RuntimeOutput::Brakes(Braking::UrgentBrake, _) => Output::Brakes(2),
         }
     }
 }
@@ -129,9 +119,9 @@ async fn main() {
                 let instant = INIT + duration;
                 // sleep to model the arrival of inputs
                 async_std::task::sleep(instant.duration_since(Instant::now())).await;
-                Some((instant, input).into())
+                Some(input.into(instant))
             }
-            Err(err) => panic!("{err}"),
+            Err(_) => None,
         }
     });
 
@@ -140,11 +130,11 @@ async fn main() {
 
     // collect N outputs
     const N: usize = 10;
-    let (mut output_stream, handle) = run(INIT, input_stream, RuntimeInit { speed_km_h: 0. });
+    let (mut output_stream, handle) = aeb::run(INIT, input_stream, RuntimeInit { speed_km_h: 0.0 });
     let mut counter = 0;
     while let Some(received) = output_stream.next().await {
         counter += 1;
-        let output: TimedOutput = (INIT, received).into();
+        let output: Output = received.into();
         append_json(OUTPUT_PATH, output);
         // stop at N
         if counter >= N {

@@ -150,6 +150,7 @@ pub use crate::{
     op::{BOp, OtherOp, UOp},
     petgraph,
     quote,
+    react_typ::ReactTyp,
     res_vec,
     rustc_hash,
     scope::Scope,

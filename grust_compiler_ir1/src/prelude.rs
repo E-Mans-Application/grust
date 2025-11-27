@@ -21,6 +21,7 @@ pub mod ir1 {
             contract::{self, Contract},
             ctx,
             dependencies::Dependencies,
+            event_pattern::{self, EventPattern},
             expr::{self, Expr},
             file::File,
             flow, from_ast, from_ast_timed,

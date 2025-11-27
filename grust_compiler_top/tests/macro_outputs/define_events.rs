@@ -20,28 +20,28 @@ impl grust::core::Component for DefineEventsState {
     fn step(&mut self, input: DefineEventsInput) -> DefineEventsOutput {
         let (z, y, x) = match (input.a, input.b) {
             (Some(a), Some(e)) => {
-                let y = Some(());
                 let z = if input.v > 50i64 { e } else { a };
+                let y = Some(());
                 (z, y, None)
             }
             (Some(_), _) => {
-                let x = Some(2i64);
                 let z = self.last_z;
+                let x = Some(2i64);
                 (z, None, x)
             }
             (_, Some(_)) => {
-                let x = Some(2i64);
                 let z = if input.v > 50i64 { 3i64 } else { 4i64 };
+                let x = Some(2i64);
                 (z, None, x)
             }
-            (_, _) => {
-                let z = self.last_z;
-                (z, None, None)
-            }
+            (_, _) => (self.last_z, None, None),
         };
         let c = z;
         let d = match (y) {
-            (Some(y)) => Some(0.1f64),
+            (Some(y)) => {
+                let d = Some(0.1f64);
+                d
+            }
             (_) => None,
         };
         self.last_z = z;

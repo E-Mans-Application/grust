@@ -103,6 +103,39 @@ impl Pattern {
                 .collect(),
         }
     }
+
+    pub fn default_expr(
+        &self,
+        defined_idents: &Vec<Ident>,
+        init_idents: &HashMap<usize, usize>,
+        ctx: &mut Ctx,
+    ) -> ir1::stream::Expr {
+        let kind = match &self.kind {
+            Kind::Identifier { id } | Kind::Typed { id, .. } => {
+                let ident = ctx.get_name(*id);
+                if defined_idents.contains(ident) {
+                    ir1::stream::Kind::expr(ir1::expr::Kind::ident(*id))
+                } else if let Some(init_id) = init_idents.get(id) {
+                    // construct default expression
+                    ir1::stream::Kind::last(*init_id, *id)
+                } else {
+                    debug_assert!(
+                        ctx.get_typ(*id).is_event(),
+                        "internal error: signal `{ident}` not initialized"
+                    );
+                    ir1::stream::Kind::none_event()
+                }
+            }
+            Kind::Tuple { elements, .. } => {
+                let elements = elements
+                    .iter()
+                    .map(|pat| pat.default_expr(defined_idents, init_idents, ctx))
+                    .collect();
+                ir1::stream::Kind::expr(ir1::expr::Kind::tuple(elements))
+            }
+        };
+        stream::Expr::new(self.loc, kind)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -135,5 +168,9 @@ impl ir1::stream::Stmt {
     /// Tell if there is no component application.
     pub fn no_comp_application(&self) -> bool {
         self.expr.no_comp_application()
+    }
+    /// Tell if there is no rising edge.
+    pub fn no_rising_edge(&self) -> bool {
+        self.expr.no_rising_edge()
     }
 }

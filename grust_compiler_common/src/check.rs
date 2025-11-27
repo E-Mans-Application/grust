@@ -64,3 +64,15 @@ pub mod typ {
         expect(loc, typ, &Typ::bool())
     }
 }
+
+pub mod react_typ {
+    prelude! {}
+
+    /// Checks that `react_typ.eq(expected)`.
+    pub fn expect(loc: Loc, react_typ: ReactTyp, expected: ReactTyp) -> URes {
+        if react_typ != expected {
+            bail!(@loc => ErrorKind::not_reactive(react_typ, expected))
+        }
+        Ok(())
+    }
+}

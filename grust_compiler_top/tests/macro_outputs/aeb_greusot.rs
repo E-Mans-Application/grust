@@ -53,10 +53,7 @@ impl grust::core::Component for BrakingStateState {
                 let state = Braking::NoBrake;
                 state
             }
-            (_, _) => {
-                let state = self.last_state;
-                state
-            }
+            (_, _) => self.last_state,
         };
         self.last_state = state;
         BrakingStateOutput { state }

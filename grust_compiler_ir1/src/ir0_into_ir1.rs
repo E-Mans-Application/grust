@@ -1,6 +1,4 @@
-prelude! {
-    itertools::Itertools, ir0::symbol::SymbolKind,
-}
+prelude! { ir0::symbol::SymbolKind }
 
 /// [ir0] transformation into [ir1], implemented by [ir0] types.
 pub trait Ir0IntoIr1<Ctx> {
@@ -537,11 +535,7 @@ mod interface_impl {
                     FlowExpression::SampleOn(expr) => expr.into_ir1(ctx)?,
                     FlowExpression::ScanOn(expr) => expr.into_ir1(ctx)?,
                 };
-                Ok(flow::Expr {
-                    kind,
-                    typ: None,
-                    loc: ctx.loc,
-                })
+                Ok(flow::Expr::new(kind, ctx.loc))
             }
         }
     }
@@ -665,15 +659,13 @@ impl Ir0IntoIr1<ctx::Simple<'_>> for ir0::Component {
         let mut logs = vec![];
         for react_eq in self.equations {
             match react_eq.into_ir1(ctx)? {
-                Either::Left((opt_inits, opt_stmt)) => {
-                    if let Some(stmt) = opt_stmt {
-                        statements.push(stmt);
-                    }
-                    if let Some(init_stmts) = opt_inits {
-                        inits.extend(init_stmts);
-                    }
+                StmtKind::Logs(ids) => logs.extend(ids),
+                StmtKind::Init(init_stmt) => inits.push(init_stmt),
+                StmtKind::Stmt(stmt, None) => statements.push(stmt),
+                StmtKind::Stmt(stmt, Some(init_stmts)) => {
+                    statements.push(stmt);
+                    inits.extend(init_stmts)
                 }
-                Either::Right(ids) => logs.extend(ids),
             }
         }
         statements.shrink_to_fit();
@@ -939,7 +931,7 @@ impl Ir0IntoIr1<ctx::Simple<'_>> for ir0::Eq {
 
         // get idents defined by the equation
         let mut defined_idents = HashMap::new();
-        self.get_idents(&mut defined_idents, ctx)?;
+        self.get_idents(&mut defined_idents);
 
         match self {
             Eq::LocalDef(LetDecl {
@@ -1000,10 +992,10 @@ impl Ir0IntoIr1<ctx::Simple<'_>> for ir0::Eq {
                                 expression.into_ir1(&mut ctx.add_pat_loc(None, loc))
                             })
                             .transpose()?;
-                        let statements = equations
-                            .into_iter()
-                            .map(|equation| equation.into_ir1(ctx))
-                            .collect::<TRes<Vec<_>>>()?;
+                        let statements = res_vec!(
+                            equations.len(),
+                            equations.into_iter().map(|equation| equation.into_ir1(ctx)),
+                        );
 
                         ctx.global();
 
@@ -1063,10 +1055,17 @@ impl Ir0IntoIr1<ctx::Simple<'_>> for ir0::Eq {
     }
 }
 
+/// Used as an output type for the implementation of [`Ir0IntoIr1`] for [`ir0::ReactEq`].
+pub enum StmtKind {
+    Logs(Vec<usize>),
+    Init(stream::InitStmt),
+    Stmt(stream::Stmt, Option<Vec<stream::InitStmt>>),
+}
+
 impl Ir0IntoIr1<ctx::Simple<'_>> for ir0::ReactEq {
     /// Reactive equations like `init` or `when` contains initializations (one or many) that are
     /// also part of their [ir1] representation, along the (optional) [ir1::stmt::Stmt].
-    type Ir1 = Either<(Option<Vec<stream::InitStmt>>, Option<stream::Stmt>), Vec<usize>>;
+    type Ir1 = StmtKind;
 
     /// Pre-condition: equation's ident is already stored in symbol table.
     ///
@@ -1081,7 +1080,7 @@ impl Ir0IntoIr1<ctx::Simple<'_>> for ir0::ReactEq {
 
         // get idents defined by the equation
         let mut defined_idents = HashMap::new();
-        self.get_idents(&mut defined_idents, ctx)?;
+        self.get_idents(&mut defined_idents);
 
         match self {
             ReactEq::LocalDef(LetDecl {
@@ -1090,12 +1089,13 @@ impl Ir0IntoIr1<ctx::Simple<'_>> for ir0::ReactEq {
                 ..
             })
             | ReactEq::OutputDef(Instantiation { expr, pattern, .. }) => {
-                let (opt_init, expr) = expr.into_ir1(&mut ctx.add_pat_loc(Some(&pattern), loc))?;
+                let (init_stmts, expr) =
+                    expr.into_ir1(&mut ctx.add_pat_loc(Some(&pattern), loc))?;
                 let pattern = pattern.into_ir1(&mut ctx.add_gen_loc(false, loc))?;
-                Ok(Either::Left((
-                    opt_init.map(|init| vec![init]),
-                    Some(stream::Stmt { pattern, expr, loc }),
-                )))
+                Ok(StmtKind::Stmt(
+                    stream::Stmt { pattern, expr, loc },
+                    Some(init_stmts),
+                ))
             }
             ReactEq::MatchEq(ir0::equation::MatchEq { expr, arms, .. }) => {
                 // create the receiving pattern for the equation
@@ -1114,99 +1114,95 @@ impl Ir0IntoIr1<ctx::Simple<'_>> for ir0::ReactEq {
                 };
 
                 // for each arm, construct pattern guard and statements
-                let arms = res_vec!(
-                    arms.len(),
-                    arms.into_iter().map(
-                        |Arm {
-                             pattern,
-                             guard,
-                             equations,
-                             ..
-                         }| {
-                            // transform pattern guard and equations into [ir1]
-                            let (idents, pattern, guard, statements) = {
-                                ctx.local();
+                let mut arm_exprs = Vec::with_capacity(arms.len());
+                for Arm {
+                    pattern,
+                    guard,
+                    equations,
+                    ..
+                } in arms.into_iter()
+                {
+                    // transform pattern guard and equations into [ir1]
+                    let (idents, pattern, guard, statements) = {
+                        ctx.local();
 
-                                // set local context: pattern idents + equations' idents
-                                pattern.store(ctx)?;
-                                let mut idents = HashMap::new();
-                                equations
-                                    .iter()
-                                    .map(|equation| {
-                                        // store equations' idents in the local context
-                                        equation.store_idents(true, &mut idents, ctx)
-                                    })
-                                    .collect_res()?;
+                        // set local context: pattern idents + equations' idents
+                        pattern.store(ctx)?;
+                        let mut idents = HashMap::new();
+                        equations
+                            .iter()
+                            .map(|equation| {
+                                // store equations' idents in the local context
+                                equation.store_idents(true, &mut idents, ctx)
+                            })
+                            .collect_res()?;
 
-                                // transform pattern guard and equations into [ir1] with local
-                                // context
-                                let pattern = pattern.into_ir1(&mut ctx.add_loc(loc))?;
-                                let guard = guard
-                                    .map(|(_, expr)| expr.into_ir1(&mut ctx.add_pat_loc(None, loc)))
-                                    .transpose()?;
-                                let statements = res_vec!(
-                                    equations.len(),
-                                    equations.into_iter().map(|equation| equation.into_ir1(ctx)),
-                                );
+                        // transform pattern guard and equations into [ir1] with local
+                        // context
+                        let pattern = pattern.into_ir1(&mut ctx.add_loc(loc))?;
+                        let guard = guard
+                            .map(|(_, expression)| {
+                                expression.into_ir1(&mut ctx.add_pat_loc(None, loc))
+                            })
+                            .transpose()?;
+                        let statements = res_vec!(
+                            equations.len(),
+                            equations.into_iter().map(|equation| equation.into_ir1(ctx)),
+                        );
 
-                                ctx.global();
+                        ctx.global();
 
-                                (idents, pattern, guard, statements)
-                            };
+                        (idents, pattern, guard, statements)
+                    };
 
-                            // create the tuple expression
-                            let expr = {
-                                // check defined idents are all the same
-                                if defined_idents.len() != idents.len() {
-                                    bad!(ctx.errors, @loc => ErrorKind::incompatible_match(
-                                        defined_idents.len(), idents.len(),
-                                    ))
-                                }
-                                let mut elements = res_vec!(
-                                    defined_idents.len(),
-                                    defined_idents.keys().map(|ident_name| {
-                                        if let Some(id) = idents.get(ident_name) {
-                                            Ok(stream::Expr::new(
-                                                ident_name.loc(),
-                                                stream::Kind::expr(ir1::expr::Kind::ident(*id)),
-                                            ))
-                                        } else {
-                                            bad!(ctx.errors, @loc => ErrorKind::missing_match_stmt(
-                                                ident_name.to_string(),
-                                            ))
-                                        }
-                                    }),
-                                );
-
-                                // create the tuple expression
-                                if elements.len() == 1 {
-                                    elements.pop().unwrap()
+                    // create the tuple expression
+                    let expression = {
+                        // check defined idents are all the same
+                        if defined_idents.len() != idents.len() {
+                            bad!(ctx.errors, @loc => ErrorKind::incompatible_match(
+                                defined_idents.len(), idents.len(),
+                            ))
+                        }
+                        let mut elements = {
+                            let mut elements = Vec::with_capacity(defined_idents.len());
+                            for ident_name in defined_idents.keys() {
+                                if let Some(id) = idents.get(ident_name) {
+                                    elements.push(ir1::stream::Expr::new(
+                                        ident_name.loc(),
+                                        ir1::stream::Kind::expr(ir1::expr::Kind::ident(*id)),
+                                    ));
                                 } else {
-                                    stream::Expr::new(
-                                        pattern.loc(),
-                                        stream::Kind::expr(ir1::expr::Kind::tuple(elements)),
+                                    bad!(ctx.errors, @loc =>
+                                        ErrorKind::missing_match_stmt(ident_name.to_string())
                                     )
                                 }
-                            };
+                            }
+                            elements
+                        };
 
-                            Ok((pattern, guard, statements, expr))
-                        },
-                    ),
-                );
+                        // create the tuple expression
+                        if elements.len() == 1 {
+                            elements.pop().unwrap()
+                        } else {
+                            stream::Expr::new(
+                                pattern.loc(),
+                                stream::Kind::expr(ir1::expr::Kind::tuple(elements)),
+                            )
+                        }
+                    };
 
+                    arm_exprs.push((pattern, guard, statements, expression));
+                }
                 // construct the match expression
                 let expr = stream::Expr::new(
                     loc,
                     stream::Kind::expr(ir1::expr::Kind::match_expr(
                         expr.into_ir1(&mut ctx.add_pat_loc(None, loc))?,
-                        arms,
+                        arm_exprs,
                     )),
                 );
 
-                Ok(Either::Left((
-                    None,
-                    Some(stream::Stmt { pattern, expr, loc }),
-                )))
+                Ok(StmtKind::Stmt(stream::Stmt { pattern, expr, loc }, None))
             }
             ReactEq::WhenEq(WhenEq { init, arms, .. }) => {
                 // create the pattern defined by the equation
@@ -1219,190 +1215,129 @@ impl Ir0IntoIr1<ctx::Simple<'_>> for ir0::ReactEq {
                     }
                 };
 
-                let (
-                    // default patterns for events detection
-                    dflt_event_elems,
-                    // map from event_id to index in tuple pattern
-                    events_indices,
-                ) = {
-                    // create map from event_id to index in tuple pattern
-                    let mut events_indices = HashMap::with_capacity(arms.len());
-                    let mut dflt_event_elems = Vec::with_capacity(arms.len() * 2);
-                    let mut idx = 0;
-                    for arm in &arms {
-                        let prev_idx = idx;
-                        arm.pattern
-                            .place_events(&mut events_indices, &mut idx, ctx)?;
-                        for _ in prev_idx..idx {
-                            // put default pattern for unlooked events
-                            dflt_event_elems.push(Pattern::new(
-                                arm.pattern.loc(),
-                                pattern::Kind::default(arm.pattern.loc()),
-                            ));
-                        }
-                    }
-                    dflt_event_elems.shrink_to_fit();
-
-                    (dflt_event_elems, events_indices)
-                };
-
                 // idents initial values
-                let (init_idents, init_stmts) =
-                    if let Some(ir0::equation::InitArmWhen { equations, .. }) = init {
-                        let mut init_idents = Vec::new();
-                        let mut init_stmts = Vec::new();
-                        for ir0::equation::Instantiation { pattern, expr, .. } in equations {
-                            pattern.get_inits(&mut init_idents);
-                            expr.check_is_constant(ctx.ctx0, ctx.errors)?;
-                            let ir1_pat = pattern.into_ir1(&mut ctx.add_gen_loc(false, loc))?;
-                            let ir1_expr = expr.into_ir1(&mut ctx.add_pat_loc(None, loc))?;
+                let (init_stmts, signal_idents) =
+                    init.map_or(Ok((vec![], vec![])), |init_arm| {
+                        let mut init_stmts = Vec::with_capacity(init_arm.equations.len());
+                        let mut signal_idents = Vec::with_capacity(init_arm.equations.len());
+                        for eq in init_arm.equations {
+                            eq.expr.check_is_constant(ctx.ctx0, ctx.errors)?;
+                            let init_ids = eq
+                                .pattern
+                                .get_idents()
+                                .into_iter()
+                                .map(|(ident, _)| {
+                                    let id =
+                                        ctx.ctx0.get_identifier_id(&ident, false, ctx.errors)?;
+                                    let init_id =
+                                        ctx.ctx0.get_init_id(&ident, false, ctx.errors)?;
+                                    signal_idents.push((ident, id));
+                                    Ok((id, init_id))
+                                })
+                                .collect::<TRes<HashMap<_, _>>>()?;
+                            let ir1_pat = eq.pattern.into_ir1(&mut ctx.add_gen_loc(false, loc))?;
+                            let ir1_expr = eq.expr.into_ir1(&mut ctx.add_pat_loc(None, loc))?;
                             init_stmts.push(stream::InitStmt {
                                 pattern: ir1_pat,
                                 expr: ir1_expr,
+                                init_ids,
                                 loc,
-                            });
+                            })
                         }
-                        (init_idents, Some(init_stmts))
-                    } else {
-                        (vec![], None)
-                    };
+                        Ok((init_stmts, signal_idents))
+                    })?;
 
-                // default arm
-                let dflt_arm = {
+                // for each arm construct [ir1] pattern, guard and statements
+                let mut new_arms = Vec::with_capacity(arms.len());
+                for EventArmWhen {
+                    pattern: event_pattern,
+                    guard,
+                    equations,
+                    ..
+                } in arms.into_iter()
+                {
+                    // transform event_pattern guard and equations into [ir1]
                     ctx.local();
 
-                    // create tuple pattern
-                    let elements = dflt_event_elems.clone();
-                    let pattern = Pattern::new(loc, pattern::Kind::tuple(elements));
-                    // transform guard and equations into [ir1] with local context
-                    let guard = None;
-                    // give last value of the undefined identifiers
-                    let stmts = def_eq_pat
-                        .default_stmt(&HashMap::new(), &init_idents, ctx)?
-                        .collect_vec();
-                    // create the tuple expression
-                    let expr = def_eq_pat.default_expr(&HashMap::new(), &init_idents, ctx)?;
+                    // set local context: equations' idents + signal_ids
+                    let mut idents = HashMap::new();
+                    equations
+                        .iter()
+                        .map(|equation| {
+                            // store equations' idents in the local context
+                            equation.store_idents(true, &mut idents, ctx)
+                        })
+                        .collect_res()?;
+                    signal_idents
+                        .iter()
+                        .filter(|(ident, _)| !idents.contains_key(ident))
+                        .try_for_each(|(ident, id)| {
+                            let ident = ident.clone();
+                            // should be already typed
+                            let typ = ctx.get_typ(*id).clone();
+                            let _id =
+                                ctx.ctx0
+                                    .insert_local_ident(ident, Some(typ), true, ctx.errors)?;
+                            Ok(())
+                        })?;
+
+                    let pat_loc = event_pattern.loc();
+                    // transform event_pattern into [ir1] + set local context
+                    let event_pattern = event_pattern.into_ir1(&mut ctx.add_loc(pat_loc))?;
+                    // transform AST guard into [ir1]
+                    let ir1_guard = guard
+                        .map(|(_, expr)| expr.into_ir1(&mut ctx.add_pat_loc(None, pat_loc)))
+                        .transpose()?;
+
+                    // transform equations into [ir1] with local context
+                    let statements = res_vec!(
+                        equations.len(),
+                        equations.into_iter().map(|equation| equation.into_ir1(ctx)),
+                    );
 
                     ctx.global();
 
-                    (pattern, guard, stmts, expr)
-                };
+                    new_arms.push((event_pattern, ir1_guard, statements))
+                }
 
-                // for each arm construct [ir1] pattern, guard and statements
-                let mut match_arms = res_vec!(
-                    arms.len(),
-                    arms.into_iter().map(
-                        |EventArmWhen {
-                             pattern: event_pattern,
-                             guard,
-                             equations,
-                             ..
-                         }| {
-                            // transform event_pattern guard and equations into [ir1]
-                            ctx.local();
-                            let pat_loc = event_pattern.loc();
-
-                            // set local context + create matched pattern
-                            let (matched_pattern, guard) = {
-                                let mut elements = dflt_event_elems.clone();
-                                let opt_rising_edges = event_pattern.create_tuple_pattern(
-                                    &mut elements,
-                                    &events_indices,
-                                    ctx,
-                                )?;
-                                let matched = Pattern::new(pat_loc, pattern::Kind::tuple(elements));
-
-                                // transform AST guard into [ir1]
-                                let mut guard = guard
-                                    .map(|(_, expression)| {
-                                        expression.into_ir1(&mut ctx.add_pat_loc(None, loc))
-                                    })
-                                    .transpose()?;
-                                // add rising edge detection to the guard
-                                if let Some(rising_edges) = opt_rising_edges {
-                                    if let Some(old_guard) = guard.take() {
-                                        guard = Some(stream::Expr::new(
-                                            old_guard.loc(),
-                                            stream::Kind::expr(expr::Kind::binop(
-                                                BOp::And,
-                                                old_guard,
-                                                rising_edges,
-                                            )),
-                                        ));
-                                    } else {
-                                        guard = Some(rising_edges)
-                                    }
-                                };
-
-                                (matched, guard)
-                            };
-
-                            // set and get local context: equations' idents
-                            let mut idents = HashMap::new();
-                            equations
-                                .iter()
-                                .map(|equation| {
-                                    // store equations' idents in the local context
-                                    equation.store_idents(true, &mut idents, ctx)
-                                })
-                                .collect_res()?;
-
-                            // give last value of the undefined identifiers
-                            let dft_stmt = def_eq_pat.default_stmt(&idents, &init_idents, ctx);
-                            // create the tuple expression
-                            let dft_expr = def_eq_pat.default_expr(&idents, &init_idents, ctx)?;
-
-                            // transform equations into [ir1] with local context
-                            let statements = res_vec!(
-                                equations.len(),
-                                dft_stmt.transpose().into_iter().chain(
-                                    equations.into_iter().map(|equation| equation.into_ir1(ctx))
-                                ),
-                            );
-
-                            ctx.global();
-
-                            Ok((matched_pattern, guard, statements, dft_expr))
-                        },
-                    ),
-                );
-                match_arms.push(dflt_arm);
-
-                // construct the match expression
-                let match_expr = {
-                    // create tuple expression to match
-                    let tuple_expr = {
-                        let elements = events_indices
-                            .iter()
-                            .sorted_by_key(|(_, idx)| **idx)
-                            .map(|(event_id, idx)| {
-                                stream::Expr::new(
-                                    match_arms[*idx].0.loc(),
-                                    stream::Kind::expr(ir1::expr::Kind::ident(*event_id)),
-                                )
-                            })
-                            .collect();
-                        stream::Expr::new(loc, stream::Kind::expr(ir1::expr::Kind::tuple(elements)))
-                    };
-                    stream::Expr::new(
-                        loc,
-                        stream::Kind::expr(ir1::expr::Kind::match_expr(tuple_expr, match_arms)),
-                    )
-                };
-
+                // transform stmt pattern into [ir1]
                 let pattern = def_eq_pat.into_ir1(&mut ctx.add_gen_loc(true, loc))?;
 
-                Ok(Either::Left((
-                    init_stmts,
-                    Some(stream::Stmt {
+                // signals memory values
+                let init_ids = {
+                    let mut init_ids = HashMap::with_capacity(init_stmts.len());
+                    for init_stmt in &init_stmts {
+                        init_ids.extend(init_stmt.init_ids.clone());
+                    }
+                    init_ids
+                };
+
+                // construct the when expression
+                let when_expr =
+                    stream::Expr::new(loc, stream::Kind::when(pattern.clone(), init_ids, new_arms));
+
+                Ok(StmtKind::Stmt(
+                    stream::Stmt {
                         pattern,
-                        expr: match_expr,
+                        expr: when_expr,
                         loc,
-                    }),
-                )))
+                    },
+                    Some(init_stmts),
+                ))
             }
             ReactEq::Init(init_ident) => {
                 init_ident.expr.check_is_constant(ctx.ctx0, ctx.errors)?;
+                let init_ids = init_ident
+                    .pattern
+                    .get_idents()
+                    .into_iter()
+                    .map(|(ident, _)| {
+                        Ok((
+                            ctx.ctx0.get_identifier_id(&ident, false, ctx.errors)?,
+                            ctx.ctx0.get_init_id(&ident, false, ctx.errors)?,
+                        ))
+                    })
+                    .collect::<TRes<HashMap<_, _>>>()?;
                 let ir1_pat = init_ident
                     .pattern
                     .into_ir1(&mut ctx.add_gen_loc(false, loc))?;
@@ -1410,15 +1345,16 @@ impl Ir0IntoIr1<ctx::Simple<'_>> for ir0::ReactEq {
                 let init_stmt = stream::InitStmt {
                     pattern: ir1_pat,
                     expr: ir1_expr,
+                    init_ids,
                     loc,
                 };
-                Ok(Either::Left((Some(vec![init_stmt]), None)))
+                Ok(StmtKind::Init(init_stmt))
             }
             ReactEq::Log(log_stmt) => {
                 let pat = log_stmt
                     .pattern
                     .into_ir1(&mut ctx.add_gen_loc(false, loc))?;
-                Ok(Either::Right(pat.identifiers()))
+                Ok(StmtKind::Logs(pat.identifiers()))
             }
         }
     }
@@ -1823,12 +1759,7 @@ mod simple_expr_impl {
                 Sort(e) => e.into_ir1(ctx)?,
                 Zip(e) => e.into_ir1(ctx)?,
             };
-            Ok(ir1::Expr {
-                kind,
-                typing: None,
-                loc: ctx.loc,
-                dependencies: Dependencies::new(),
-            })
+            Ok(ir1::Expr::new(kind, ctx.loc))
         }
     }
 }
@@ -1935,7 +1866,55 @@ mod expr_pattern_impl {
                 Default(loc) => ir1::pattern::Kind::Default(loc),
             };
 
-            Ok(ir1::Pattern {
+            Ok(ir1::Pattern::new(ctx.loc, kind))
+        }
+    }
+}
+
+mod event_pattern_impl {
+    prelude! {
+        ir0::equation::{EventPattern, LetEventPattern, TupleEventPattern},
+    }
+
+    impl Ir0IntoIr1<ir1::ctx::WithLoc<'_>> for LetEventPattern {
+        type Ir1 = ir1::event_pattern::Kind;
+
+        fn into_ir1(self, ctx: &mut ir1::ctx::WithLoc) -> TRes<Self::Ir1> {
+            let event_id = ctx.ctx0.get_identifier_id(&self.event, false, ctx.errors)?;
+            // put pattern idents in local context
+            self.pattern.store(&mut ctx.rm_loc())?;
+            let pattern = self.pattern.into_ir1(ctx)?;
+            Ok(ir1::event_pattern::Kind::detect(pattern, event_id))
+        }
+    }
+
+    impl Ir0IntoIr1<ir1::ctx::WithLoc<'_>> for TupleEventPattern {
+        type Ir1 = ir1::event_pattern::Kind;
+
+        fn into_ir1(self, ctx: &mut ir1::ctx::WithLoc) -> TRes<Self::Ir1> {
+            Ok(ir1::event_pattern::Kind::tuple(res_vec!(
+                self.patterns.len(),
+                self.patterns
+                    .into_iter()
+                    .map(|pattern| pattern.into_ir1(ctx)),
+            )))
+        }
+    }
+
+    impl Ir0IntoIr1<ir1::ctx::WithLoc<'_>> for EventPattern {
+        type Ir1 = ir1::EventPattern;
+
+        fn into_ir1(self, ctx: &mut ir1::ctx::WithLoc) -> TRes<Self::Ir1> {
+            use ir0::equation::EventPattern::*;
+            let kind = match self {
+                Tuple(pat) => pat.into_ir1(ctx)?,
+                Let(pat) => pat.into_ir1(ctx)?,
+                RisingEdge(expr) => {
+                    ir1::event_pattern::Kind::rising_edge(expr.into_ir1(&mut ctx.add_pat(None))?)
+                }
+            };
+
+            Ok(ir1::EventPattern {
                 kind,
                 typing: None,
                 loc: ctx.loc,
@@ -1944,140 +1923,9 @@ mod expr_pattern_impl {
     }
 }
 
-trait Helper: Sized {
-    fn get_inits(&self, init_idents: &mut Vec<Ident>);
-
-    fn default_stmt(
-        &self,
-        defined_idents: &HashMap<Ident, usize>,
-        init_idents: &[Ident],
-        ctx: &mut ctx::Simple,
-    ) -> TRes<Option<ir1::stream::Stmt>>;
-
-    fn default_expr(
-        &self,
-        defined_idents: &HashMap<Ident, usize>,
-        init_idents: &[Ident],
-        ctx: &mut ctx::Simple,
-    ) -> TRes<ir1::stream::Expr>;
-}
-
 mod stmt_pattern_impl {
-    use super::Helper;
-
     prelude! {
         ir0::stmt::{Typed, Tuple}
-    }
-
-    impl Helper for ir0::stmt::Pattern {
-        fn default_stmt(
-            &self,
-            defined_idents: &HashMap<Ident, usize>,
-            init_idents: &[Ident],
-            ctx: &mut ctx::Simple,
-        ) -> TRes<Option<ir1::stream::Stmt>> {
-            // construct pattern of defined idents + their default expression
-            let (mut pat_elems, mut expr_elems) = (vec![], vec![]);
-            for ident in init_idents
-                .iter()
-                .filter(|ident| defined_idents.get(ident).is_none())
-            {
-                // get the identifier assigned to the memory of the signal
-                let init_id = ctx.ctx0.get_init_id(ident, false, ctx.errors)?;
-                // get the identifier of the signal in the global context
-                let ident_id = ctx.ctx0.get_identifier_id(ident, false, ctx.errors)?;
-                // get its type and transform it into [ir1] types
-                let typ = ctx.ctx0.get_typ(ident_id).clone();
-                // insert local identifier to define the signal locally
-                let def_id =
-                    ctx.ctx0
-                        .insert_generated_ident(ident.clone(), Some(typ), true, ctx.errors)?;
-                // construct pattern of defined idents + their default expression
-                let pat = ir1::stmt::Pattern::new(ident.loc(), ir1::stmt::Kind::ident(def_id));
-                let expr =
-                    ir1::stream::Expr::new(ident.loc(), ir1::stream::Kind::last(init_id, ident_id));
-                pat_elems.push(pat);
-                expr_elems.push(expr);
-            }
-            debug_assert_eq!(pat_elems.len(), expr_elems.len());
-            // construct the default statement from the default pattern and the expression
-            match pat_elems.len() {
-                0 => Ok(None),
-                1 => {
-                    let pattern = pat_elems.pop().unwrap();
-                    let expr = expr_elems.pop().unwrap();
-                    Ok(Some(stream::Stmt::new(pattern, expr, self.loc())))
-                }
-                _ => {
-                    let pattern =
-                        ir1::stmt::Pattern::new(self.loc(), ir1::stmt::Kind::tuple(pat_elems));
-                    let expr = ir1::stream::Expr::new(
-                        self.loc(),
-                        ir1::stream::Kind::expr(ir1::expr::Kind::tuple(expr_elems)),
-                    );
-                    Ok(Some(stream::Stmt::new(pattern, expr, self.loc())))
-                }
-            }
-        }
-
-        fn default_expr(
-            &self,
-            defined_idents: &HashMap<Ident, usize>,
-            init_idents: &[Ident],
-            ctx: &mut ctx::Simple,
-        ) -> TRes<ir1::stream::Expr> {
-            let kind = match self {
-                ir0::stmt::Pattern::Identifier(ident)
-                | ir0::stmt::Pattern::Typed(Typed { ident, .. }) => {
-                    if let Some(id) = defined_idents.get(ident) {
-                        ir1::stream::Kind::expr(ir1::expr::Kind::ident(*id))
-                    } else {
-                        let id = ctx.ctx0.get_identifier_id(ident, false, ctx.errors)?;
-                        if init_idents.contains(ident) {
-                            ir1::stream::Kind::expr(ir1::expr::Kind::ident(id))
-                        } else {
-                            let ty = ctx.get_typ(id);
-                            if ty.is_event() {
-                                ir1::stream::Kind::none_event()
-                            } else {
-                                Err(
-                                error!(@ident.loc() => ErrorKind::unknown_init(ident.to_string())))
-                                    .dewrap(ctx.errors)?
-                            }
-                        }
-                    }
-                }
-                ir0::stmt::Pattern::Tuple(Tuple { elements, .. }) => {
-                    let elements = res_vec!(
-                        elements.len(),
-                        elements.iter().map(|pat| pat.default_expr(
-                            defined_idents,
-                            init_idents,
-                            ctx
-                        )),
-                    );
-                    ir1::stream::Kind::expr(ir1::expr::Kind::tuple(elements))
-                }
-            };
-            Ok(stream::Expr::new(self.loc(), kind))
-        }
-
-        fn get_inits(&self, init_idents: &mut Vec<Ident>) {
-            match self {
-                Self::Identifier(ident) => {
-                    init_idents.push(ident.clone());
-                }
-                Self::Typed(typed) => {
-                    init_idents.push(typed.ident.clone());
-                }
-                Self::Tuple(ir0::stmt::Tuple {
-                    elements: pat_elems,
-                    ..
-                }) => {
-                    pat_elems.iter().for_each(|pat| pat.get_inits(init_idents));
-                }
-            }
-        }
     }
 
     impl Ir0IntoIr1<ir1::ctx::GenLoc<'_>> for Typed {
@@ -2141,7 +1989,7 @@ impl Ir0IntoIr1<ir1::ctx::Simple<'_>> for ir0::stmt::LetDecl<ir0::Expr> {
         let loc = self.loc();
         // stmts should be ordered in functions
         // then patterns are stored in order
-        self.typed_pattern.store(true, ctx)?;
+        self.typed_pattern.store(ctx)?;
         let expr = self
             .expr
             .into_ir1(&mut ctx.add_pat_loc(Some(&self.typed_pattern), loc))?;
@@ -2154,184 +2002,90 @@ impl Ir0IntoIr1<ir1::ctx::Simple<'_>> for ir0::stmt::LetDecl<ir0::Expr> {
 }
 
 mod stream_impl {
-    use super::Helper;
-
-    prelude! {
-        ir0::{ symbol::SymbolKind, stream },
-        itertools::Itertools,
-    }
+    prelude! { ir0::{ symbol::SymbolKind, stream } }
 
     impl Ir0IntoIr1<ir1::ctx::PatLoc<'_>> for stream::WhenExpr {
         /// Reactive expressions `when` can contain initializations that are
         /// also part of their [ir1] representation, along the [ir1::stream::Kind].
-        type Ir1 = (Option<ir1::stream::InitStmt>, ir1::stream::Kind);
+        type Ir1 = (Vec<ir1::stream::InitStmt>, ir1::stream::Kind);
 
         /// Transforms AST into [ir1] and check identifiers good use.
         fn into_ir1(self, ctx: &mut ir1::ctx::PatLoc) -> TRes<Self::Ir1> {
             // pre-condition: identifiers are stored in symbol table
             // post-condition: construct [ir1] expression kind and check identifiers good use
-            let stream::WhenExpr {
-                init,
-                arms,
-                when_token,
-            } = self;
+            let stream::WhenExpr { init, arms, .. } = self;
+
             let def_eq_pat = ctx
                 .pat
                 .take()
                 .expect("internal error: there should be a pattern");
-
-            let (
-                // default patterns for events detection
-                dflt_event_elems,
-                // map from event_id to index in tuple pattern
-                events_indices,
-            ) = {
-                // create map from event_id to index in tuple pattern
-                let mut events_indices = HashMap::with_capacity(arms.len());
-                let mut dflt_event_elems = Vec::with_capacity(arms.len() * 2);
-                let mut idx = 0;
-                for arm in &arms {
-                    let prev_idx = idx;
-                    arm.pattern.place_events(
-                        &mut events_indices,
-                        &mut idx,
-                        &mut ctx.rm_pat_loc(),
-                    )?;
-                    for _ in prev_idx..idx {
-                        // put default pattern for unlooked events
-                        dflt_event_elems.push(Pattern::new(
-                            arm.pattern.loc(),
-                            pattern::Kind::default(arm.pattern.loc()),
-                        ));
-                    }
-                }
-                dflt_event_elems.shrink_to_fit();
-                (dflt_event_elems, events_indices)
-            };
+            let idents = def_eq_pat.get_idents();
+            let when_pat = def_eq_pat
+                .clone()
+                .into_ir1(&mut ctx.rm_pat().add_gen(false))?;
 
             // idents initial values
-            let (opt_init, init_idents) = if let Some(ir0::stream::InitArmWhen { expr, .. }) = init
-            {
-                let mut init_idents = vec![];
-                def_eq_pat.get_inits(&mut init_idents);
-                expr.check_is_constant(ctx.ctx0, ctx.errors)?;
-                let ir1_pat = def_eq_pat
-                    .clone()
-                    .into_ir1(&mut ctx.rm_pat().add_gen(false))?;
-                let ir1_expr = expr.into_ir1(ctx)?;
+            let init_stmts = init.map_or(Ok(vec![]), |init_arm| {
+                init_arm.expr.check_is_constant(ctx.ctx0, ctx.errors)?;
+                let loc = init_arm.expr.loc();
+                let init_expr = init_arm.expr.into_ir1(ctx)?;
+                let init_ids = idents
+                    .into_iter()
+                    .map(|(ident, _)| {
+                        Ok((
+                            ctx.ctx0.get_identifier_id(&ident, false, ctx.errors)?,
+                            ctx.ctx0.get_init_id(&ident, false, ctx.errors)?,
+                        ))
+                    })
+                    .collect::<TRes<HashMap<_, _>>>()?;
                 let init_stmt = ir1::stream::InitStmt {
-                    pattern: ir1_pat,
-                    expr: ir1_expr,
-                    loc: ctx.loc,
+                    pattern: when_pat.clone(),
+                    expr: init_expr,
+                    init_ids,
+                    loc,
                 };
-                (Some(init_stmt), init_idents)
-            } else {
-                (None, vec![])
-            };
-
-            // default arm
-            let dflt_arm = {
-                ctx.local();
-
-                // create tuple pattern
-                let elements = dflt_event_elems.clone();
-                let pattern = Pattern::new(self.when_token.span, pattern::Kind::tuple(elements));
-                // transform guard and equations into [ir1] with local context
-                let guard = None;
-                // give last value of the undefined identifiers
-                let ctx = &mut ctx.rm_pat_loc();
-                let stmts = def_eq_pat
-                    .default_stmt(&HashMap::new(), &init_idents, ctx)?
-                    .collect_vec();
-                // create the tuple expression
-                let expr = def_eq_pat.default_expr(&HashMap::new(), &init_idents, ctx)?;
-
-                ctx.global();
-
-                (pattern, guard, stmts, expr)
-            };
+                Ok(vec![init_stmt])
+            })?;
 
             // for each arm construct [ir1] pattern, guard and statements
-            let mut match_arms = res_vec!(
-                arms.len(),
-                arms.into_iter().map(
-                    |stream::EventArmWhen {
-                         pattern: event_pattern,
-                         guard,
-                         expr,
-                         ..
-                     }| {
-                        // transform event_pattern guard and equations into [ir1]
-                        ctx.local();
-                        let pat_loc = event_pattern.loc();
-
-                        // set local context + create matched pattern
-                        let (matched_pattern, guard) = {
-                            let mut elements = dflt_event_elems.clone();
-                            let opt_rising_edges = event_pattern.create_tuple_pattern(
-                                &mut elements,
-                                &events_indices,
-                                &mut ctx.rm_pat_loc(),
-                            )?;
-                            let matched = Pattern::new(pat_loc, pattern::Kind::tuple(elements));
-
-                            // transform AST guard into [ir1]
-                            let mut guard = guard
-                                .map(|expression| expression.into_ir1(ctx))
-                                .transpose()?;
-                            // add rising edge detection to the guard
-                            if let Some(rising_edges) = opt_rising_edges {
-                                if let Some(old_guard) = guard.take() {
-                                    guard = Some(ir1::stream::Expr::new(
-                                        old_guard.loc(),
-                                        ir1::stream::Kind::expr(expr::Kind::binop(
-                                            BOp::And,
-                                            old_guard,
-                                            rising_edges,
-                                        )),
-                                    ));
-                                } else {
-                                    guard = Some(rising_edges)
-                                }
-                            };
-
-                            (matched, guard)
-                        };
-
-                        // transform expression into [ir1] with local context
-                        let expression = expr.into_ir1(ctx)?;
-
-                        ctx.global();
-
-                        Ok((matched_pattern, guard, vec![], expression))
-                    },
-                ),
-            );
-            match_arms.push(dflt_arm);
-
-            // construct the match expression
-            let match_expr = {
-                // create tuple expression to match
-                let tuple_expr = {
-                    let elements = events_indices
-                        .iter()
-                        .sorted_by_key(|(_, idx)| **idx)
-                        .map(|(event_id, idx)| {
-                            ir1::stream::Expr::new(
-                                match_arms[*idx].0.loc(),
-                                ir1::stream::Kind::expr(ir1::expr::Kind::ident(*event_id)),
-                            )
-                        })
-                        .collect();
-                    ir1::stream::Expr::new(
-                        when_token.span,
-                        ir1::stream::Kind::expr(ir1::expr::Kind::tuple(elements)),
-                    )
+            let mut new_arms = Vec::with_capacity(arms.len());
+            for arm in arms.into_iter() {
+                ctx.local();
+                // transform event_pattern into [ir1] + set local context
+                let event_pattern = arm.pattern.into_ir1(&mut ctx.rm_pat())?;
+                // transform stmt_pat into [ir1] + set local context
+                def_eq_pat.store(&mut ctx.rm_pat_loc())?;
+                let stmt_pat = def_eq_pat
+                    .clone()
+                    .into_ir1(&mut ctx.rm_pat().add_gen(false))?;
+                // transform AST guard into [ir1]
+                let ir1_guard = arm.guard.map(|expr| expr.into_ir1(ctx)).transpose()?;
+                // transform expression into [ir1] with local context
+                let ir1_expr = arm.expr.into_ir1(ctx)?;
+                // create stmt
+                let loc = ir1_expr.loc();
+                let stmt = ir1::Stmt {
+                    pattern: stmt_pat,
+                    expr: ir1_expr,
+                    loc,
                 };
-                ir1::stream::Kind::expr(ir1::expr::Kind::match_expr(tuple_expr, match_arms))
+                ctx.global();
+                new_arms.push((event_pattern, ir1_guard, vec![stmt]))
+            }
+
+            // signals memory values
+            let init_ids = {
+                let mut init_ids = HashMap::with_capacity(init_stmts.len());
+                for init_stmt in &init_stmts {
+                    init_ids.extend(init_stmt.init_ids.clone());
+                }
+                init_ids
             };
 
-            Ok((opt_init, match_expr))
+            Ok((
+                init_stmts,
+                ir1::stream::Kind::when(when_pat, init_ids, new_arms),
+            ))
         }
     }
 
@@ -2394,7 +2148,7 @@ mod stream_impl {
                     let ident_id = ctx.ctx0.get_ident(&last.ident, false, false, ctx.errors)?;
                     Kind::last(init_id, ident_id)
                 }
-                stream::Expr::Emit(emit) => Kind::some_event(emit.expr.into_ir1(ctx)?),
+                stream::Expr::Emit(emit) => Kind::emit(emit.expr.into_ir1(ctx)?),
                 stream::Expr::Constant(constant) => Kind::Expression {
                     expr: ir1::expr::Kind::Constant { constant },
                 },
@@ -2425,36 +2179,24 @@ mod stream_impl {
                 stream::Expr::Zip(expr) => Kind::expr(expr.into_ir1(ctx)?),
                 stream::Expr::ArrayAccess(expr) => Kind::expr(expr.into_ir1(ctx)?),
             };
-            Ok(ir1::stream::Expr {
-                kind,
-                typ: None,
-                loc: ctx.loc,
-                dependencies: ir1::Dependencies::new(),
-            })
+
+            Ok(ir1::stream::Expr::new(ctx.loc, kind))
         }
     }
 
     impl Ir0IntoIr1<ir1::ctx::PatLoc<'_>> for stream::ReactExpr {
         /// Reactive expressions `when` can contain initializations that are
         /// also part of their [ir1] representation, along the [ir1::stream::Expr].
-        type Ir1 = (Option<ir1::stream::InitStmt>, ir1::stream::Expr);
+        type Ir1 = (Vec<ir1::stream::InitStmt>, ir1::stream::Expr);
 
         // pre-condition: identifiers are stored in symbol table
         // post-condition: construct [ir1] stream expression and check identifiers good use
         fn into_ir1(self, ctx: &mut ir1::ctx::PatLoc) -> TRes<Self::Ir1> {
             match self {
-                stream::ReactExpr::Expr(expr) => Ok((None, expr.into_ir1(ctx)?)),
+                stream::ReactExpr::Expr(expr) => Ok((vec![], expr.into_ir1(ctx)?)),
                 stream::ReactExpr::WhenExpr(expr) => {
-                    let (opt_init, kind) = expr.into_ir1(ctx)?;
-                    Ok((
-                        opt_init,
-                        ir1::stream::Expr {
-                            kind,
-                            typ: None,
-                            loc: ctx.loc,
-                            dependencies: ir1::Dependencies::new(),
-                        },
-                    ))
+                    let (init_stmts, kind) = expr.into_ir1(ctx)?;
+                    Ok((init_stmts, ir1::stream::Expr::new(ctx.loc, kind)))
                 }
             }
         }

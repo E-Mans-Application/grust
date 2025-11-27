@@ -74,7 +74,8 @@ impl grust::core::Component for ActivateState {
     fn step(&mut self, input: ActivateInput) -> ActivateOutput {
         let (active, r_mem, approach) = match (input.act, input.r) {
             (Some(act), _) => {
-                let (r_mem, approach) = (self.last_r_mem, self.last_approach);
+                let r_mem = self.last_r_mem;
+                let approach = self.last_approach;
                 let active = act == Activation::On;
                 (active, r_mem, approach)
             }
@@ -84,11 +85,7 @@ impl grust::core::Component for ActivateState {
                 let approach = r < self.last_r_mem;
                 (active, r_mem, approach)
             }
-            (_, _) => {
-                let (r_mem, active, approach) =
-                    (self.last_r_mem, self.last_active, self.last_approach);
-                (active, r_mem, approach)
-            }
+            (_, _) => (self.last_active, self.last_r_mem, self.last_approach),
         };
         let c = active && approach;
         self.last_active = active;
@@ -133,10 +130,7 @@ impl grust::core::Component for DeriveOnState {
                 let (x_mem, t_mem) = (input.x, input.t);
                 (x_mem, v, t_mem)
             }
-            (_) => {
-                let (v, x_mem, t_mem) = (self.last_v, self.last_x_mem, self.last_t_mem);
-                (x_mem, v, t_mem)
-            }
+            (_) => (self.last_x_mem, self.last_v, self.last_t_mem),
         };
         self.last_t_mem = t_mem;
         self.last_v = v;
@@ -401,11 +395,11 @@ pub mod runtime {
                 }
             }
             #[derive(Clone, Copy, PartialEq, Default, Debug)]
-            pub struct DeltaV(f64, bool);
-            impl DeltaV {
-                pub fn set(&mut self, delta_v: f64) {
-                    self.1 = self.0 != delta_v;
-                    self.0 = delta_v;
+            pub struct SpeedKmH(f64, bool);
+            impl SpeedKmH {
+                pub fn set(&mut self, speed_km_h: f64) {
+                    self.1 = self.0 != speed_km_h;
+                    self.0 = speed_km_h;
                 }
                 pub fn get(&self) -> f64 {
                     self.0
@@ -421,11 +415,11 @@ pub mod runtime {
                 }
             }
             #[derive(Clone, Copy, PartialEq, Default, Debug)]
-            pub struct SpeedKmH(f64, bool);
-            impl SpeedKmH {
-                pub fn set(&mut self, speed_km_h: f64) {
-                    self.1 = self.0 != speed_km_h;
-                    self.0 = speed_km_h;
+            pub struct DeltaV(f64, bool);
+            impl DeltaV {
+                pub fn set(&mut self, delta_v: f64) {
+                    self.1 = self.0 != delta_v;
+                    self.0 = delta_v;
                 }
                 pub fn get(&self) -> f64 {
                     self.0
@@ -487,8 +481,8 @@ pub mod runtime {
             pub speed_m_s: ctx_ty::SpeedMS,
             pub brakes_m_s: ctx_ty::BrakesMS,
             pub radar_e_old: ctx_ty::RadarEOld,
-            pub delta_v: ctx_ty::DeltaV,
             pub speed_km_h: ctx_ty::SpeedKmH,
+            pub delta_v: ctx_ty::DeltaV,
             pub x: ctx_ty::X,
             pub cond: ctx_ty::Cond,
         }
@@ -501,8 +495,8 @@ pub mod runtime {
                 self.speed_m_s.reset();
                 self.brakes_m_s.reset();
                 self.radar_e_old.reset();
-                self.delta_v.reset();
                 self.speed_km_h.reset();
+                self.delta_v.reset();
                 self.x.reset();
                 self.cond.reset();
             }
@@ -527,9 +521,9 @@ pub mod runtime {
             context: Context,
             delayed: bool,
             input_store: AdaptiveCruiseControlServiceStore,
+            activate: ActivateState,
             acc: AccState,
             derive_on: DeriveOnState,
-            activate: ActivateState,
             output: grust::futures::channel::mpsc::Sender<O>,
             timer: grust::futures::channel::mpsc::Sender<(T, std::time::Instant)>,
         }
@@ -542,17 +536,17 @@ pub mod runtime {
                 let context = Context::init();
                 let delayed = true;
                 let input_store = Default::default();
+                let activate = <ActivateState as grust::core::Component>::init();
                 let acc = <AccState as grust::core::Component>::init();
                 let derive_on = <DeriveOnState as grust::core::Component>::init();
-                let activate = <ActivateState as grust::core::Component>::init();
                 AdaptiveCruiseControlService {
                     _grust_reserved_init_instant,
                     context,
                     delayed,
                     input_store,
+                    activate,
                     acc,
                     derive_on,
-                    activate,
                     output,
                     timer,
                 }

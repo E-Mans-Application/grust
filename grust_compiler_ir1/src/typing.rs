@@ -499,7 +499,6 @@ impl Typing for stream::Expr {
                 self.typ = Some(id_type.clone());
                 Ok(())
             }
-
             stream::Kind::ComponentApplication {
                 called_comp_id,
                 ref mut inputs,
@@ -531,21 +530,8 @@ impl Typing for stream::Expr {
                 self.typ = Some(comp_application_type);
                 Ok(())
             }
-
             stream::Kind::Expression { ref mut expr } => {
                 self.typ = Some(expr.typ_check(self.loc, symbols, errors)?);
-                Ok(())
-            }
-
-            stream::Kind::SomeEvent { ref mut expr } => {
-                expr.typ_check(symbols, errors)?;
-                let expr_type = expr.get_typ().unwrap().clone();
-                self.typ = Some(Typ::sm_event(expr_type));
-                Ok(())
-            }
-
-            stream::Kind::NoneEvent => {
-                self.typ = Some(Typ::sm_event(Typ::Any));
                 Ok(())
             }
             stream::Kind::RisingEdge { ref mut expr } => {
@@ -558,6 +544,41 @@ impl Typing for stream::Expr {
                 self.typ = Some(expected);
                 Ok(())
             }
+            stream::Kind::WhenExpr {
+                ref mut def_eq_pat,
+                ref mut arms,
+                ..
+            } => {
+                arms.iter_mut().try_for_each(|(pattern, guard, body)| {
+                    // type pattern
+                    pattern.typ_check(symbols, errors)?;
+                    // type guard
+                    guard.as_mut().map_or(Ok(()), |expr| {
+                        expr.typ_check(symbols, errors)?;
+                        expr.get_typ().unwrap().expect_bool(self.loc).dewrap(errors)
+                    })?;
+                    // type all equations
+                    body.iter_mut()
+                        .try_for_each(|stmt| stmt.typ_check(symbols, errors))?;
+                    Ok(())
+                })?;
+
+                def_eq_pat.typ_check(symbols, errors)?;
+                let pat_typ = def_eq_pat
+                    .get_type()
+                    .expect("internal error: should be typed by the previous statement");
+                self.typ = Some(pat_typ.clone());
+
+                Ok(())
+            }
+            stream::Kind::SomeEvent { ref mut expr } => {
+                expr.typ_check(symbols, errors)?;
+                let expr_type = expr.get_typ().unwrap().clone();
+                // set the type
+                self.typ = Some(Typ::option(expr_type));
+                Ok(())
+            }
+            stream::Kind::NoneEvent => unreachable!("typ_check in expressions"),
         }
     }
 
@@ -571,7 +592,6 @@ impl Typing for stream::Expr {
 }
 
 impl<E: Typing> Typing for Stmt<E> {
-    // pre-condition: identifiers associated with statement is already typed
     // post-condition: expression associated with statement is typed and checked
     fn typ_check(&mut self, symbols: &mut Ctx, errors: &mut Vec<Error>) -> TRes<()> {
         self.pattern.typ_check(symbols, errors)?;
@@ -587,7 +607,6 @@ impl<E: Typing> Typing for Stmt<E> {
 }
 
 impl Typing for stream::InitStmt {
-    // pre-condition: identifiers associated with statement is already typed
     // post-condition: expression associated with statement is typed and checked
     fn typ_check(&mut self, symbols: &mut Ctx, errors: &mut Vec<Error>) -> TRes<()> {
         self.pattern.typ_check(symbols, errors)?;
@@ -680,43 +699,50 @@ impl Pattern {
                 }
                 _ => bad!(errors, @self.loc => ErrorKind::expected_tuple_pat()),
             },
-            Kind::Some { ref mut pattern } => match expected_type {
-                Typ::Option { ty, .. } => {
-                    pattern.typ_check(ty, symbols, errors)?;
-                    let pattern_type = pattern.get_typ().unwrap().clone();
-                    self.typing = Some(Typ::sm_event(pattern_type));
-                    Ok(())
-                }
-                _ => bad!(errors, @self.loc => ErrorKind::expected_option_pat()),
-            },
-            Kind::None => {
-                self.typing = Some(Typ::sm_event(Typ::Any));
-                Ok(())
-            }
             Kind::Default(_) => {
                 self.typing = Some(Typ::any());
                 Ok(())
             }
-            Kind::PresentEvent {
-                event_id,
-                ref mut pattern,
-            } => {
-                let typing = symbols.get_typ(event_id).clone();
-                expected_type.expect(self.loc, &typing).dewrap(errors)?;
+            Kind::PresentEvent { .. } => unreachable!("typ_check in patterns"),
+        }
+    }
+}
 
-                match &typing {
-                    Typ::Option { ty, .. } => pattern.typ_check(ty, symbols, errors)?,
-                    ty => Err(error!(@self.loc() => ErrorKind::expected_event(ty.clone())))
-                        .dewrap(errors)?,
-                }
-
-                self.typing = Some(typing);
+impl EventPattern {
+    /// Tries to type the given construct.
+    pub fn typ_check(&mut self, symbols: &mut Ctx, errors: &mut Vec<Error>) -> TRes<()> {
+        use event_pattern::Kind;
+        match self.kind {
+            Kind::Tuple { ref mut elements } => {
+                elements
+                    .iter_mut()
+                    .try_for_each(|pattern| pattern.typ_check(symbols, errors))?;
+                let types = elements
+                    .iter()
+                    .map(|pattern| pattern.get_typ().unwrap().clone())
+                    .collect();
+                self.typing = Some(Typ::tuple(types));
                 Ok(())
             }
-            Kind::NoEvent { event_id } => {
-                let typing = symbols.get_typ(event_id).clone();
-                expected_type.expect(self.loc, &typing).dewrap(errors)?;
-                self.typing = Some(typing);
+            Kind::Let {
+                ref mut pattern,
+                ref mut event_id,
+            } => match symbols.get_typ(*event_id) {
+                Typ::Option { ty, .. } => {
+                    let expected_type = ty.as_ref().clone();
+                    pattern.typ_check(&expected_type, symbols, errors)?;
+                    self.typing = Some(expected_type);
+                    Ok(())
+                }
+                ty => {
+                    Err(error!(@self.loc => ErrorKind::expected_event(ty.clone()))).dewrap(errors)
+                }
+            },
+            Kind::RisingEdge(ref mut expr) => {
+                expr.typ_check(symbols, errors)?;
+                let ty = expr.get_typ().unwrap();
+                ty.expect_bool(self.loc).dewrap(errors)?;
+                self.typing = Some(ty.clone());
                 Ok(())
             }
         }

@@ -455,7 +455,7 @@ impl FlowStatement {
                         // push in flows context
                         let source_name = ctx.get_name(id).clone();
                         let flow_name = ctx.get_name(pattern_id).clone();
-                        let ty = Typ::sm_event(ctx.get_typ(id).clone());
+                        let ty = Typ::option(ctx.get_typ(id).clone());
                         flows_context.add_element(source_name, &ty);
                         flows_context.add_element(flow_name, &ty);
                     }

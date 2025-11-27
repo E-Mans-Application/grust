@@ -117,28 +117,16 @@ pub trait Ir0StoreIdents {
     fn store_inits(&self, inits: &mut HashMap<Ident, usize>, ctx: &mut ctx::Simple) -> TRes<()>;
 
     /// Collects the identifiers of the equation.
-    fn get_idents(
-        &self,
-        idents: &mut HashMap<Ident, ir0::stmt::Pattern>,
-        ctx: &mut ctx::Simple,
-    ) -> TRes<()>;
+    fn get_idents(&self, idents: &mut HashMap<Ident, ir0::stmt::Pattern>);
 
     /// Collects the initializations.
-    fn get_inits(
-        &self,
-        inits: &mut HashMap<Ident, ir0::stmt::Pattern>,
-        ctx: &mut ctx::Simple,
-    ) -> TRes<()>;
+    fn get_inits(&self, inits: &mut HashMap<Ident, ir0::stmt::Pattern>);
 }
 
 pub trait Ir0StoreInit: Sized {
     fn store_inits(&self, inits: &mut HashMap<Ident, usize>, ctx: &mut ctx::Simple) -> TRes<()>;
 
-    fn get_inits(
-        &self,
-        inits: &mut HashMap<Ident, ir0::stmt::Pattern>,
-        ctx: &mut ctx::Simple,
-    ) -> TRes<()>;
+    fn get_inits(&self, inits: &mut HashMap<Ident, ir0::stmt::Pattern>);
 }
 
 mod equation {
@@ -155,13 +143,13 @@ mod equation {
                 // when output definitions should be stored
                 Eq::OutputDef(instantiation) if store_outputs => instantiation
                     .pattern
-                    .store(false, ctx)
+                    .store(ctx)
                     .map(|new_idents| idents.extend(new_idents)),
                 // when output definitions are already stored (as component outputs)
                 Eq::OutputDef(_) => Ok(()),
                 Eq::LocalDef(declaration) => declaration
                     .typed_pattern
-                    .store(true, ctx)
+                    .store(ctx)
                     .map(|new_idents| idents.extend(new_idents)),
                 Eq::MatchEq(MatchEq { arms, .. }) => {
                     let Arm { equations, .. } = arms.first().unwrap();
@@ -181,37 +169,20 @@ mod equation {
             Ok(())
         }
 
-        fn get_idents(
-            &self,
-            idents: &mut HashMap<Ident, ir0::stmt::Pattern>,
-            ctx: &mut ctx::Simple,
-        ) -> TRes<()> {
+        fn get_idents(&self, idents: &mut HashMap<Ident, ir0::stmt::Pattern>) {
             match self {
-                Eq::OutputDef(instantiation) => instantiation
-                    .pattern
-                    .get_idents(ctx)
-                    .map(|new_idents| idents.extend(new_idents)),
-                Eq::LocalDef(declaration) => declaration
-                    .typed_pattern
-                    .get_idents(ctx)
-                    .map(|new_idents| idents.extend(new_idents)),
+                Eq::OutputDef(instantiation) => idents.extend(instantiation.pattern.get_idents()),
+                Eq::LocalDef(declaration) => idents.extend(declaration.typed_pattern.get_idents()),
                 Eq::MatchEq(MatchEq { arms, .. }) => {
                     let Arm { equations, .. } = arms.first().unwrap();
                     for eq in equations {
-                        eq.get_idents(idents, ctx)?;
+                        eq.get_idents(idents);
                     }
-                    Ok(())
                 }
             }
         }
 
-        fn get_inits(
-            &self,
-            _inits: &mut HashMap<Ident, ir0::stmt::Pattern>,
-            _ctx: &mut ctx::Simple,
-        ) -> TRes<()> {
-            Ok(())
-        }
+        fn get_inits(&self, _inits: &mut HashMap<Ident, ir0::stmt::Pattern>) {}
     }
 
     impl Ir0StoreInit for InitArmWhen {
@@ -227,16 +198,11 @@ mod equation {
             Ok(())
         }
 
-        fn get_inits(
-            &self,
-            inits: &mut HashMap<Ident, ir0::stmt::Pattern>,
-            ctx: &mut ctx::Simple,
-        ) -> TRes<()> {
+        fn get_inits(&self, inits: &mut HashMap<Ident, ir0::stmt::Pattern>) {
             for init in &self.equations {
-                let idents = init.pattern.get_idents(ctx)?;
+                let idents = init.pattern.get_idents();
                 inits.extend(idents);
             }
-            Ok(())
         }
     }
 
@@ -251,13 +217,13 @@ mod equation {
                 // output definitions should be stored
                 ReactEq::OutputDef(instantiation) if store_outputs => instantiation
                     .pattern
-                    .store(false, ctx)
+                    .store(ctx)
                     .map(|new_idents| idents.extend(new_idents)),
                 // when output definitions are already stored (as component's outputs)
                 ReactEq::OutputDef(_) | ReactEq::Init(_) | ReactEq::Log(_) => Ok(()),
                 ReactEq::LocalDef(declaration) => declaration
                     .typed_pattern
-                    .store(true, ctx)
+                    .store(ctx)
                     .map(|new_idents| idents.extend(new_idents)),
                 ReactEq::MatchEq(MatchEq { arms, .. }) => {
                     let Arm { equations, .. } = arms.first().unwrap();
@@ -343,66 +309,50 @@ mod equation {
             }
         }
 
-        fn get_idents(
-            &self,
-            idents: &mut HashMap<Ident, ir0::stmt::Pattern>,
-            ctx: &mut ctx::Simple,
-        ) -> TRes<()> {
+        fn get_idents(&self, idents: &mut HashMap<Ident, ir0::stmt::Pattern>) {
             match self {
-                ReactEq::OutputDef(instantiation) => instantiation
-                    .pattern
-                    .get_idents(ctx)
-                    .map(|new_idents| idents.extend(new_idents)),
-                ReactEq::LocalDef(declaration) => declaration
-                    .typed_pattern
-                    .get_idents(ctx)
-                    .map(|new_idents| idents.extend(new_idents)),
+                ReactEq::OutputDef(instantiation) => {
+                    idents.extend(instantiation.pattern.get_idents())
+                }
+                ReactEq::LocalDef(declaration) => {
+                    idents.extend(declaration.typed_pattern.get_idents())
+                }
                 ReactEq::MatchEq(MatchEq { arms, .. }) => {
                     let Arm { equations, .. } = arms.first().unwrap();
                     for eq in equations {
-                        eq.get_idents(idents, ctx)?;
+                        eq.get_idents(idents);
                     }
-                    Ok(())
                 }
                 ReactEq::WhenEq(WhenEq { arms, .. }) => {
                     let mut add_idents = |equations: &[Eq]| {
                         // we want to collect every identifier, but events might be declared in only
                         // one branch then, it is needed to explore all branches
                         for eq in equations {
-                            eq.get_idents(idents, ctx)?;
+                            eq.get_idents(idents);
                         }
-                        Ok(())
                     };
                     for EventArmWhen { equations, .. } in arms {
-                        add_idents(equations)?
+                        add_idents(equations);
                     }
-                    Ok(())
                 }
-                ReactEq::Init(_) | ReactEq::Log(_) => Ok(()),
+                ReactEq::Init(_) | ReactEq::Log(_) => (),
             }
         }
 
-        fn get_inits(
-            &self,
-            inits: &mut HashMap<Ident, ir0::stmt::Pattern>,
-            ctx: &mut ctx::Simple,
-        ) -> TRes<()> {
+        fn get_inits(&self, inits: &mut HashMap<Ident, ir0::stmt::Pattern>) {
             match self {
                 ReactEq::OutputDef(_)
                 | ReactEq::LocalDef(_)
                 | ReactEq::MatchEq(_)
-                | ReactEq::Log(_) => Ok(()),
+                | ReactEq::Log(_) => (),
                 ReactEq::WhenEq(WhenEq { init, .. }) => {
                     if let Some(init) = init {
-                        init.get_inits(inits, ctx)
-                    } else {
-                        Ok(())
+                        init.get_inits(inits)
                     }
                 }
-                ReactEq::Init(init) => init
-                    .pattern
-                    .get_idents(ctx)
-                    .map(|idents| inits.extend(idents)),
+                ReactEq::Init(init) => {
+                    inits.extend(init.pattern.get_idents());
+                }
             }
         }
     }
@@ -594,9 +544,9 @@ impl Ir0Store for ir0::ConstDecl {
 }
 
 pub trait Ir0StorePattern: Sized {
-    fn store(&self, ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, usize)>>;
+    fn store(&self, ctx: &mut ctx::Simple) -> TRes<()>;
 
-    fn get_idents(&self, ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, Self)>>;
+    fn get_idents(&self) -> TRes<Vec<(Ident, Self)>>;
 }
 
 mod expr_pattern {
@@ -605,54 +555,36 @@ mod expr_pattern {
     }
 
     impl Ir0StorePattern for Pattern {
-        fn store(&self, ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, usize)>> {
+        fn store(&self, ctx: &mut ctx::Simple) -> TRes<()> {
             match self {
-                Pattern::Identifier(name) => {
-                    let id = ctx.ctx0.insert_ident(
-                        name.clone(),
-                        Scope::VeryLocal,
-                        None,
-                        true,
-                        ctx.errors,
-                    )?;
-                    Ok(vec![(name.clone(), id)])
+                Pattern::Identifier(name) => ctx
+                    .ctx0
+                    .insert_ident(name.clone(), Scope::VeryLocal, None, true, ctx.errors)
+                    .map(|_| ()),
+                Pattern::Tuple(PatTuple { elements, .. }) => {
+                    elements.iter().try_for_each(|pattern| pattern.store(ctx))
                 }
-                Pattern::Tuple(PatTuple { elements, .. }) => Ok(elements
-                    .iter()
-                    .map(|pattern| pattern.store(ctx))
-                    .collect::<TRes<Vec<_>>>()?
-                    .into_iter()
-                    .flatten()
-                    .collect()),
-                Pattern::Structure(PatStructure { fields, .. }) => Ok(fields
-                    .iter()
-                    .map(|(field, optional_pattern)| {
+                Pattern::Structure(PatStructure { fields, .. }) => {
+                    fields.iter().try_for_each(|(field, optional_pattern)| {
                         if let Some(pattern) = optional_pattern {
                             pattern.store(ctx)
                         } else {
-                            let id = ctx.ctx0.insert_local_ident(
-                                field.clone(),
-                                None,
-                                true,
-                                ctx.errors,
-                            )?;
-                            Ok(vec![(field.clone(), id)])
+                            ctx.ctx0
+                                .insert_local_ident(field.clone(), None, true, ctx.errors)
+                                .map(|_| ())
                         }
                     })
-                    .collect::<TRes<Vec<_>>>()?
-                    .into_iter()
-                    .flatten()
-                    .collect()),
-                Pattern::Constant(_) | Pattern::Enumeration(_) | Pattern::Default(_) => Ok(vec![]),
+                }
+                Pattern::Constant(_) | Pattern::Enumeration(_) | Pattern::Default(_) => Ok(()),
             }
         }
 
-        fn get_idents(&self, _ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, Pattern)>> {
+        fn get_idents(&self) -> TRes<Vec<(Ident, Pattern)>> {
             match self {
                 Pattern::Identifier(name) => Ok(vec![(name.clone(), self.clone())]),
                 Pattern::Tuple(PatTuple { elements, .. }) => Ok(elements
                     .iter()
-                    .map(|pattern| pattern.get_idents(_ctx))
+                    .map(|pattern| pattern.get_idents())
                     .collect::<TRes<Vec<_>>>()?
                     .into_iter()
                     .flatten()
@@ -661,7 +593,7 @@ mod expr_pattern {
                     .iter()
                     .map(|(field, optional_pattern)| {
                         if let Some(pattern) = optional_pattern {
-                            pattern.get_idents(_ctx)
+                            pattern.get_idents()
                         } else {
                             Ok(vec![(field.clone(), Pattern::ident(field.clone()))])
                         }
@@ -677,11 +609,11 @@ mod expr_pattern {
 }
 
 pub trait Ir0StoreStmtPattern: Sized {
-    fn store(&self, is_declaration: bool, ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, usize)>>;
+    fn store(&self, ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, usize)>>;
 
     fn store_inits(&self, ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, usize)>>;
 
-    fn get_idents(&self, ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, Self)>>;
+    fn get_idents(&self) -> Vec<(Ident, Self)>;
 }
 
 mod stmt_pattern {
@@ -690,40 +622,29 @@ mod stmt_pattern {
     }
 
     impl Ir0StoreStmtPattern for Pattern {
-        fn store(&self, is_declaration: bool, ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, usize)>> {
+        fn store(&self, ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, usize)>> {
             let loc = self.loc();
 
             match self {
                 Pattern::Identifier(ident) => {
-                    if is_declaration {
-                        Err(error!(@ident.loc() => ErrorKind::expected_ty(ident.to_string())))
-                    } else {
-                        let id = ctx.ctx0.get_identifier_id(ident, false, ctx.errors)?;
-                        // outputs should be already typed
-                        let typ = ctx.get_typ(id).clone();
-                        let id = ctx.ctx0.insert_local_ident(
-                            ident.clone(),
-                            Some(typ),
-                            true,
-                            ctx.errors,
-                        )?;
-                        Ok(vec![(ident.clone(), id)])
-                    }
-                    .dewrap(ctx.errors)
+                    let id = ctx.ctx0.get_identifier_id(ident, false, ctx.errors)?;
+                    // outputs should be already typed
+                    let typ = ctx.get_typ(id).clone();
+                    let id =
+                        ctx.ctx0
+                            .insert_local_ident(ident.clone(), Some(typ), true, ctx.errors)?;
+                    Ok(vec![(ident.clone(), id)])
                 }
-                Pattern::Typed(Typed { ident, typ, .. }) => if is_declaration {
+                Pattern::Typed(Typed { ident, typ, .. }) => {
                     let typ = typ.clone().into_ir1(&mut ctx.add_loc(loc))?;
                     let id =
                         ctx.ctx0
                             .insert_local_ident(ident.clone(), Some(typ), true, ctx.errors)?;
                     Ok(vec![(ident.clone(), id)])
-                } else {
-                    Err(error!(@ident.loc() => ErrorKind::re_ty(ident.to_string())))
                 }
-                .dewrap(ctx.errors),
                 Pattern::Tuple(Tuple { elements, .. }) => Ok(elements
                     .iter()
-                    .map(|pattern| pattern.store(is_declaration, ctx))
+                    .map(|pattern| pattern.store(ctx))
                     .collect::<TRes<Vec<_>>>()?
                     .into_iter()
                     .flatten()
@@ -761,18 +682,15 @@ mod stmt_pattern {
             }
         }
 
-        fn get_idents(&self, _ctx: &mut ctx::Simple) -> TRes<Vec<(Ident, Pattern)>> {
+        fn get_idents(&self) -> Vec<(Ident, Pattern)> {
             match self {
                 Pattern::Identifier(ident) | Pattern::Typed(Typed { ident, .. }) => {
-                    Ok(vec![(ident.clone(), self.clone())])
+                    vec![(ident.clone(), self.clone())]
                 }
-                Pattern::Tuple(Tuple { elements, .. }) => Ok(elements
+                Pattern::Tuple(Tuple { elements, .. }) => elements
                     .iter()
-                    .map(|pattern| pattern.get_idents(_ctx))
-                    .collect::<TRes<Vec<_>>>()?
-                    .into_iter()
-                    .flatten()
-                    .collect()),
+                    .flat_map(|pattern| pattern.get_idents())
+                    .collect(),
             }
         }
     }
@@ -860,13 +778,8 @@ pub trait Ir0StoreEventPattern {
         idx: &mut usize,
         ctx: &mut ctx::Simple,
     ) -> TRes<()>;
-    /// Creates event tuple and stores the events.
-    fn create_tuple_pattern(
-        self,
-        tuple: &mut Vec<ir1::Pattern>,
-        events_indices: &HashMap<usize, usize>,
-        ctx: &mut ctx::Simple,
-    ) -> TRes<Option<ir1::stream::Expr>>;
+    /// Stores the identifiers defined by the pattern in the symbol table.
+    fn store(&self, ctx: &mut ctx::Simple) -> TRes<()>;
 }
 
 mod event_pattern {
@@ -875,7 +788,6 @@ mod event_pattern {
     }
 
     impl Ir0StoreEventPattern for EventPattern {
-        /// Accumulates in `events_indices` the indices of events in the matched tuple.
         fn place_events(
             &self,
             events_indices: &mut HashMap<usize, usize>,
@@ -902,71 +814,14 @@ mod event_pattern {
             }
         }
 
-        /// Creates event tuple, stores the events and return rising_edges combined as a guard.
-        fn create_tuple_pattern(
-            self,
-            tuple: &mut Vec<ir1::Pattern>,
-            events_indices: &HashMap<usize, usize>,
-            ctx: &mut ctx::Simple,
-        ) -> TRes<Option<ir1::stream::Expr>> {
+        fn store(&self, ctx: &mut ctx::Simple) -> TRes<()> {
             match self {
-                EventPattern::Tuple(patterns) => {
-                    let mut guard: Option<ir1::stream::Expr> = None;
-                    let mut combine_guard = |opt_guard: Option<ir1::stream::Expr>| {
-                        if let Some(add_guard) = opt_guard {
-                            if let Some(old_guard) = guard.take() {
-                                guard = Some(ir1::stream::Expr::new(
-                                    old_guard.loc(),
-                                    ir1::stream::Kind::expr(ir1::expr::Kind::binop(
-                                        BOp::And,
-                                        old_guard,
-                                        add_guard,
-                                    )),
-                                ));
-                            } else {
-                                guard = Some(add_guard);
-                            }
-                        }
-                    };
-
-                    patterns.patterns.into_iter().try_for_each(|pattern| {
-                        let opt_guard = pattern.create_tuple_pattern(tuple, events_indices, ctx)?;
-                        // combine all rising edge detections
-                        combine_guard(opt_guard);
-                        Ok(())
-                    })?;
-
-                    Ok(guard)
-                }
-                EventPattern::Let(pattern) => {
-                    let loc = pattern.loc();
-                    let ctx = &mut ctx.add_loc(loc);
-
-                    // get the event identifier
-                    let event_id = ctx
-                        .ctx0
-                        .get_identifier_id(&pattern.event, false, ctx.errors)?;
-
-                    // transform inner_pattern into [ir1]
-                    pattern.pattern.store(&mut ctx.rm_loc())?;
-                    let inner_pattern = pattern.pattern.into_ir1(ctx)?;
-                    let event_pattern = ir1::pattern::Pattern::new(
-                        pattern.event.loc(),
-                        ir1::pattern::Kind::present(event_id, inner_pattern),
-                    );
-
-                    // put event in tuple
-                    let idx = events_indices[&event_id];
-                    *tuple.get_mut(idx).unwrap() = event_pattern;
-
-                    Ok(None)
-                }
-                EventPattern::RisingEdge(expr) => {
-                    let loc = expr.loc();
-                    let ctx = &mut ctx.add_pat_loc(None, loc);
-                    let guard = ir1::stream::Kind::rising_edge(expr.into_ir1(ctx)?);
-                    Ok(Some(ir1::stream::Expr::new(loc, guard)))
-                }
+                EventPattern::Tuple(tuple) => tuple
+                    .patterns
+                    .iter()
+                    .try_for_each(|pattern| pattern.store(ctx)),
+                EventPattern::Let(pattern) => pattern.pattern.store(ctx).map(|_| ()),
+                EventPattern::RisingEdge(_) => Ok(()),
             }
         }
     }

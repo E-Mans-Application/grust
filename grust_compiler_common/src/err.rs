@@ -151,6 +151,13 @@ pub enum ErrorKind {
         /// Expected type.
         expected_type: Typ,
     },
+    /// Not reactive.
+    NotReactive {
+        /// Given reactive type.
+        given_react_type: ReactTyp,
+        /// Expected reactive type.
+        expected_react_type: ReactTyp,
+    },
     /// Incompatible tuple.
     IncompatibleTuple,
     /// Incompatible match statements.
@@ -324,6 +331,10 @@ mk_new! { impl ErrorKind =>
         name: impl Into<String> = name.into(),
     }
 
+    NotReactive: not_reactive {
+        given_react_type: ReactTyp, expected_react_type: ReactTyp,
+    }
+
     AlreadyDefinedElement: elm_redef {
         name: impl Into<String> = name.into(),
     }
@@ -423,6 +434,13 @@ impl Display for ErrorKind {
             } => write!(
                 f,
                 "type mismatch: got `{given_type}`, expected `{expected_type}`"
+            ),
+            NotReactive {
+                given_react_type,
+                expected_react_type,
+            } => write!(
+                f,
+                "not reactive: got `{given_react_type}`, expected `{expected_react_type}`"
             ),
             IncompatibleTuple => write!(f, "incompatible tuple"),
             IncompatibleMatchStatements { expected, received } => write!(

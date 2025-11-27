@@ -17,6 +17,23 @@ impl ops::DerefMut for Simple<'_> {
         self.ctx0
     }
 }
+pub struct WithComp<'a> {
+    pub ctx0: &'a mut Ctx,
+    pub errors: &'a mut Vec<Error>,
+    pub components: &'a HashMap<usize, &'a Component>,
+    pub functions: &'a HashMap<usize, &'a Function>,
+}
+impl ops::Deref for WithComp<'_> {
+    type Target = Ctx;
+    fn deref(&self) -> &Self::Target {
+        self.ctx0
+    }
+}
+impl ops::DerefMut for WithComp<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.ctx0
+    }
+}
 pub struct WithLoc<'a> {
     pub loc: Loc,
     pub ctx0: &'a mut Ctx,
@@ -83,6 +100,28 @@ impl<'a> Simple<'a> {
     }
     pub fn add_gen_loc(&mut self, codegen: bool, loc: impl Into<Loc>) -> GenLoc<'_> {
         GenLoc::new(codegen, loc, self.ctx0, self.errors)
+    }
+    pub fn add_components<'b>(
+        &'b mut self,
+        components: &'b HashMap<usize, &'b Component>,
+        functions: &'a HashMap<usize, &'a Function>,
+    ) -> WithComp<'b> {
+        WithComp::new(self.ctx0, self.errors, components, functions)
+    }
+}
+impl<'a> WithComp<'a> {
+    pub fn new(
+        ctx0: &'a mut Ctx,
+        errors: &'a mut Vec<Error>,
+        components: &'a HashMap<usize, &'a Component>,
+        functions: &'a HashMap<usize, &'a Function>,
+    ) -> Self {
+        Self {
+            ctx0,
+            errors,
+            components,
+            functions,
+        }
     }
 }
 impl<'a> WithLoc<'a> {

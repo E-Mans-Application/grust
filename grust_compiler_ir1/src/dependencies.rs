@@ -775,11 +775,12 @@ impl ir1::stream::Stmt {
     /// }
     /// ```
     pub fn add_ident_dependencies(&self, ident: usize, ctx: &mut GraphProcCtx) -> TRes<()> {
+        let name = ctx.ctx0.get_name(ident);
         // get identifier's color
         let color = ctx
             .proc_manager
             .get_mut(&ident)
-            .expect("internal error: ident should be in processing manager");
+            .unwrap_or_else(|| panic!("internal error: {} should be in processing manager", name));
 
         match color {
             // if vertex unprocessed
@@ -800,10 +801,9 @@ impl ir1::stream::Stmt {
                 });
 
                 // get identifier's color
-                let color = ctx
-                    .proc_manager
-                    .get_mut(&ident)
-                    .expect("internal error: ident should be in processing manager");
+                let color = ctx.proc_manager.get_mut(&ident).unwrap_or_else(|| {
+                    panic!("internal error: {} should be in processing manager", name)
+                });
                 // update status: processed
                 *color = Color::Black;
 
@@ -828,7 +828,7 @@ impl stream::Expr {
             stream::Kind::SomeEvent { expr } | stream::Kind::RisingEdge { expr } => {
                 expr.get_called_comps(target)
             }
-            stream::Kind::Last { .. } | stream::Kind::NoneEvent => (),
+            stream::Kind::Last { .. } => (),
             stream::Kind::ComponentApplication {
                 called_comp_id,
                 inputs,
@@ -839,6 +839,17 @@ impl stream::Expr {
                     .for_each(|(_, expr)| expr.get_called_comps(target));
                 target.push(*called_comp_id);
             }
+            stream::Kind::WhenExpr { arms, .. } => {
+                for (_, bound, body) in arms.iter() {
+                    for stmt in body.iter() {
+                        stmt.expr.get_called_comps(target);
+                    }
+                    if let Some(bound) = bound.as_ref() {
+                        bound.get_called_comps(target);
+                    }
+                }
+            }
+            stream::Kind::NoneEvent => unreachable!("get_called_comps in expressions"),
         }
     }
 
@@ -916,16 +927,64 @@ impl stream::Expr {
                 self.dependencies.set(expr.compute_dependencies(ctx)?);
                 Ok(())
             }
+            stream::Kind::WhenExpr { arms, .. } => {
+                // compute arms dependencies
+                let mut deps = Vec::with_capacity(25);
+
+                for (pattern, bound, body) in arms.iter() {
+                    deps.extend(pattern.get_dependencies(ctx)?);
+                    // get local idents defined in pattern
+                    let local_idents = pattern.identifiers();
+                    // extends `deps` with the input iterator without local idents
+                    macro_rules! add_deps {
+                        {$iter:expr} => {
+                            deps.extend(
+                                $iter.filter(|(ident, _)| !local_idents.contains(ident)).cloned()
+                            )
+                        }
+                    }
+
+                    // get bound dependencies
+                    if let Some(expr) = bound {
+                        expr.compute_dependencies(ctx)?;
+                        add_deps!(expr.get_dependencies().iter());
+                    }
+
+                    for statement in body {
+                        statement.add_dependencies(ctx)?;
+                        add_deps!(statement.expr.get_dependencies().iter());
+                    }
+                }
+                self.dependencies.set(deps);
+
+                Ok(())
+            }
             stream::Kind::SomeEvent { expr } => {
                 // propagate dependencies computation in expression
                 expr.compute_dependencies(ctx)?;
                 self.dependencies.set(expr.get_dependencies().clone());
                 Ok(())
             }
-            stream::Kind::NoneEvent => {
-                // no dependencies
-                self.dependencies.set(vec![]);
-                Ok(())
+            stream::Kind::NoneEvent => unreachable!("compute_dependencies for expressions"),
+        }
+    }
+}
+
+impl EventPattern {
+    /// Compute dependencies of a stream expression.
+    pub fn get_dependencies(&self, ctx: &mut GraphProcCtx) -> TRes<Vec<(usize, Label)>> {
+        match &self.kind {
+            event_pattern::Kind::Tuple { elements } => {
+                let mut deps = Vec::with_capacity(elements.len());
+                for pat in elements {
+                    deps.extend(pat.get_dependencies(ctx)?)
+                }
+                Ok(deps)
+            }
+            event_pattern::Kind::Let { event_id, .. } => Ok(vec![(*event_id, Label::Weight(0))]),
+            event_pattern::Kind::RisingEdge(expr) => {
+                expr.compute_dependencies(ctx)?;
+                Ok(expr.get_dependencies().clone())
             }
         }
     }

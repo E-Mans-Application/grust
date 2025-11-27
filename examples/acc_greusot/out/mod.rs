@@ -4,7 +4,7 @@ use creusot_contracts::{ensures, logic, open, prelude, requires, DeepModel};
 #[ensures(0 < result @ && result @ < 150)]
 #[ensures(result @ == logical :: safety_distance(sv_v @ , fv_v @))]
 pub fn safety_distance(sv_v: i64, fv_v: i64) -> i64 {
-    let sv_d_stop = (sv_v * 1i64) + ((sv_v * sv_v) / (2i64 * 6i64));
+    let sv_d_stop = (sv_v * (0i64 + 1i64)) + ((sv_v * sv_v) / (2i64 * 6i64));
     let fv_d_stop = (fv_v * fv_v) / (2i64 * 6i64);
     sv_d_stop - fv_d_stop
 }
@@ -61,7 +61,7 @@ mod logical {
     #[open]
     #[logic]
     pub fn safety_distance(sv_v: Int, fv_v: Int) -> Int {
-        let sv_d_stop = (sv_v * 1) + ((sv_v * sv_v) / (2 * 6));
+        let sv_d_stop = (sv_v * (0 + 1)) + ((sv_v * sv_v) / (2 * 6));
         let fv_d_stop = (fv_v * fv_v) / (2 * 6);
         sv_d_stop - fv_d_stop
     }

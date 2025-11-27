@@ -212,6 +212,14 @@ impl HasLoc for Expr {
     }
 }
 impl Expr {
+    pub fn new(kind: Kind, loc: Loc) -> Self {
+        Expr {
+            kind,
+            typ: None,
+            loc,
+        }
+    }
+
     pub fn get_type(&self) -> Option<&Typ> {
         self.typ.as_ref()
     }

@@ -620,9 +620,7 @@ pub mod runtime {
                     }
                 } else {
                     let unique = self.input_store.e0.replace((e0, _e0_instant));
-                    assert!
-                    (unique.is_none(),
-                    "flow `e0` changes twice within one minimal delay of the service, consider reducing this delay");
+                    assert ! (unique . is_none () , "flow `e0` changes twice within one minimal delay of the service, consider reducing this delay");
                 }
                 Ok(())
             }

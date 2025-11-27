@@ -1,5 +1,9 @@
 //! [`stream::Expr`][Expr] module.
 
+use grust_compiler_common::itertools::Itertools;
+
+use crate::event_pattern::EventPattern;
+
 prelude! {
     graph::{Label, DiGraphMap},
 }
@@ -20,6 +24,15 @@ impl Stmt {
             } => arms
                 .iter()
                 .flat_map(|(pattern, _, statements, _)| {
+                    statements
+                        .iter()
+                        .flat_map(|statement| statement.get_identifiers())
+                        .chain(pattern.identifiers())
+                })
+                .collect(),
+            stream::Kind::WhenExpr { arms, .. } => arms
+                .iter()
+                .flat_map(|(pattern, _, statements)| {
                     statements
                         .iter()
                         .flat_map(|statement| statement.get_identifiers())
@@ -340,6 +353,8 @@ pub struct InitStmt {
     pub pattern: stmt::Pattern,
     /// The expression initializing the element.
     pub expr: Expr,
+    /// Identifers to the initialized memories.
+    pub init_ids: HashMap<usize, usize>,
     /// InitStmt location.
     pub loc: Loc,
 }
@@ -936,6 +951,9 @@ impl ExprKind {
     }
 }
 
+/// Type for the arms of the when expression.
+pub type Arm = (EventPattern, Option<Expr>, Vec<Stmt>);
+
 #[derive(Debug, PartialEq, Clone)]
 /// GRust stream expression kind AST.
 pub enum Kind {
@@ -959,6 +977,14 @@ pub enum Kind {
         called_comp_id: usize,
         /// The inputs to the expression.
         inputs: Vec<(usize, Expr)>,
+    },
+    /// When expression.
+    WhenExpr {
+        def_eq_pat: stmt::Pattern,
+        /// The initialization.
+        init_ids: HashMap<usize, usize>,
+        /// The different matching cases.
+        arms: Vec<Arm>,
     },
     /// Detect a rising edge of the expression.
     RisingEdge {
@@ -994,12 +1020,15 @@ mk_new! { impl Kind =>
         called_comp_id: usize,
         inputs: Vec<(usize, Expr)>,
     }
+    WhenExpr: when {
+        def_eq_pat: stmt::Pattern,
+        init_ids: HashMap<usize, usize>,
+        arms: impl Into<Vec<Arm>> = arms.into(),
+    }
     RisingEdge: rising_edge {
         expr: Expr = expr.into(),
     }
-    SomeEvent: some_event {
-        expr: Expr = expr.into(),
-    }
+    SomeEvent: emit { expr: Expr = expr.into() }
     NoneEvent: none_event ()
 }
 
@@ -1016,6 +1045,13 @@ impl HasWeight for Kind {
                 // at least `wb.rayon_ubx`
                 wb.rayon_ubx() + w8!(sum inputs, |(_, e)| e.weight(wb, ctx))
             }
+            WhenExpr { arms, .. } => arms
+                .iter()
+                .map(|(_, expr_opt, stmts)| {
+                    w8!(wb, ctx => weight? expr_opt.as_ref()) + w8!(wb, ctx => sum stmts)
+                })
+                .max()
+                .unwrap_or(weight::zero),
             RisingEdge { expr } => expr.weight(wb, ctx) + weight::mid,
             SomeEvent { expr } => expr.weight(wb, ctx) + weight::mid,
             NoneEvent => weight::zero,
@@ -1066,6 +1102,7 @@ impl Expr {
     pub fn get_type_mut(&mut self) -> Option<&mut Typ> {
         self.typ.as_mut()
     }
+
     /// Get stream expression's dependencies.
     pub fn get_dependencies(&self) -> &Vec<(usize, Label)> {
         self.dependencies
@@ -1075,6 +1112,7 @@ impl Expr {
 
     /// Tell if it is in normal form.
     ///
+    /// - no when expressions
     /// - component application as root expression
     /// - no rising edge
     pub fn is_normal_form(&self) -> bool {
@@ -1088,6 +1126,7 @@ impl Expr {
             Kind::ComponentApplication { inputs, .. } => {
                 inputs.iter().all(|(_, expr)| predicate_expr(expr))
             }
+            Kind::WhenExpr { .. } => false,
             Kind::SomeEvent { expr } => predicate_expr(expr),
             Kind::NoneEvent => true,
             Kind::RisingEdge { .. } => false,
@@ -1103,6 +1142,13 @@ impl Expr {
                 }),
             Kind::Last { .. } => true,
             Kind::ComponentApplication { .. } => false,
+            Kind::WhenExpr { arms, .. } => arms.iter().all(|(_, expr_opt, stmts)| {
+                let expr_opt_test = expr_opt
+                    .as_ref()
+                    .is_none_or(|expr| expr.no_comp_application());
+                let stmts_test = stmts.iter().all(|stmt| stmt.no_comp_application());
+                expr_opt_test && stmts_test
+            }),
             Kind::SomeEvent { expr } => expr.no_comp_application(),
             Kind::NoneEvent => true,
             Kind::RisingEdge { expr } => expr.no_comp_application(),
@@ -1120,6 +1166,11 @@ impl Expr {
             Kind::ComponentApplication { inputs, .. } => {
                 inputs.iter().all(|(_, expr)| expr.no_rising_edge())
             }
+            Kind::WhenExpr { arms, .. } => arms.iter().all(|(_, expr_opt, stmts)| {
+                let expr_opt_test = expr_opt.as_ref().is_none_or(|expr| expr.no_rising_edge());
+                let stmts_test = stmts.iter().all(|stmt| stmt.no_rising_edge());
+                expr_opt_test && stmts_test
+            }),
             Kind::SomeEvent { expr } => expr.no_rising_edge(),
             Kind::NoneEvent => true,
             Kind::RisingEdge { .. } => false,
@@ -1166,7 +1217,7 @@ impl Expr {
                 expr.memorize(identifier_creator, memory, ctx)?;
             }
             stream::Kind::NoneEvent => (),
-            stream::Kind::RisingEdge { .. } => noErrorDesc!(),
+            Kind::WhenExpr { .. } | stream::Kind::RisingEdge { .. } => noErrorDesc!(),
         }
         Ok(())
     }
@@ -1259,15 +1310,17 @@ impl Expr {
                         loc,
                         dependencies: Dependencies::from(vec![]),
                     };
+                    let init_id = id;
                     let init_mem = stream::InitStmt {
                         pattern: init_pat,
                         expr: init_expr,
+                        init_ids: HashMap::from_iter([(id, init_id)]),
                         loc,
                     };
                     new_inits.push(init_mem);
 
                     let mem = stream::Expr {
-                        kind: stream::Kind::last(id, id),
+                        kind: stream::Kind::last(init_id, id),
                         typ: Some(Typ::Boolean(Default::default())),
                         loc,
                         dependencies: last_dependencies.clone(),
@@ -1282,7 +1335,7 @@ impl Expr {
                     self.dependencies =
                         Dependencies::from(vec![(id, Label::weight(0)), (id, Label::weight(1))]);
                     self.kind =
-                        stream::Kind::expr(expr::Kind::binop(BOp::And, *expr.clone(), not_mem));
+                        stream::Kind::expr(expr::Kind::binop(BOp::And, *expr.clone(), not_mem)); // TODO: put dependencies, type, and reactive type?
 
                     (new_stmts, new_inits)
                 } else {
@@ -1361,6 +1414,166 @@ impl Expr {
                 identifier_creator,
                 ctx,
             ),
+            stream::Kind::WhenExpr {
+                ref mut def_eq_pat,
+                ref init_ids,
+                ref mut arms,
+            } => {
+                let (
+                    // default patterns for events detection
+                    dflt_event_elems,
+                    // map from event_id to index in tuple pattern
+                    events_indices,
+                ) = {
+                    // create map from event_id to index in tuple pattern
+                    let mut events_indices = HashMap::with_capacity(arms.len());
+                    let mut dflt_event_elems = Vec::with_capacity(arms.len() * 2);
+                    let mut idx = 0;
+                    for (ref pattern, _, _) in arms.iter() {
+                        let prev_idx = idx;
+                        pattern.place_events(&mut events_indices, &mut idx);
+                        for _ in prev_idx..idx {
+                            // put default pattern for unlooked events
+                            dflt_event_elems.push(Pattern::new(
+                                pattern.loc(),
+                                pattern::Kind::default(pattern.loc()),
+                            ));
+                        }
+                    }
+                    dflt_event_elems.shrink_to_fit();
+                    (dflt_event_elems, events_indices)
+                };
+
+                let mut inits = vec![];
+                let mut stmts = vec![];
+                let mut match_arms = vec![];
+                // for each arm construct [ir1] pattern, guard and statements
+                for (event_pattern, expr_opt, arm_stmts) in arms {
+                    // create matched pattern
+                    let (matched_pattern, guard) = {
+                        let mut elements = dflt_event_elems.clone();
+                        let opt_rising_edges = event_pattern
+                            .clone()
+                            .create_tuple_pattern(&mut elements, &events_indices);
+                        let matched =
+                            Pattern::new(event_pattern.loc(), pattern::Kind::tuple(elements));
+
+                        let mut guard = expr_opt.clone();
+                        // add rising edge detection to the guard
+                        if let Some(rising_edges) = opt_rising_edges {
+                            if let Some(old_guard) = guard.take() {
+                                guard = Some(ir1::stream::Expr::new(
+                                    old_guard.loc(),
+                                    ir1::stream::Kind::expr(expr::Kind::binop(
+                                        BOp::And,
+                                        old_guard,
+                                        rising_edges,
+                                    )),
+                                ));
+                            } else {
+                                guard = Some(rising_edges)
+                            }
+                        };
+
+                        // normalize guard
+                        if let Some(expr) = guard.as_mut() {
+                            let (new_stmts, new_inits) = expr.normal_form(
+                                components_reduced_graphs,
+                                identifier_creator,
+                                ctx,
+                            );
+                            // add inits
+                            inits.extend(new_inits);
+                            // add stmts
+                            stmts.extend(new_stmts);
+                        }
+
+                        (matched, guard)
+                    };
+
+                    // normalize arm_stmts
+                    let mut new_arms_stmts: Vec<ir1::Stmt<Expr>> = vec![];
+                    let mut idents = vec![];
+                    for stmt in arm_stmts.drain(..) {
+                        // collect defined ids
+                        idents.extend(
+                            stmt.get_identifiers()
+                                .iter()
+                                .map(|id| ctx.get_name(*id).clone()),
+                        );
+                        // normalize stmt
+                        let (new_stmts, new_inits) =
+                            stmt.normal_form(components_reduced_graphs, identifier_creator, ctx);
+                        // add inits
+                        inits.extend(new_inits);
+                        // add new_arms_stmts
+                        new_arms_stmts.extend(new_stmts);
+                    }
+                    let mut not_updated_signals: Vec<ir1::Stmt<Expr>> = vec![];
+                    for (id, init_id) in init_ids {
+                        let name = ctx.get_name(*id);
+                        if !idents.contains(name) {
+                            let last_stmt = ir1::Stmt::new(
+                                ir1::stmt::Pattern::new(loc, ir1::stmt::Kind::ident(*id)),
+                                ir1::stream::Expr {
+                                    kind: ir1::stream::Kind::last(*init_id, *id),
+                                    typ: Some(ctx.get_typ(*id).clone()),
+                                    loc,
+                                    dependencies: Dependencies::from(vec![(*id, Label::weight(1))]),
+                                },
+                                loc,
+                            );
+                            not_updated_signals.push(last_stmt);
+                            idents.push(name.clone());
+                        }
+                    }
+                    not_updated_signals.extend(new_arms_stmts);
+
+                    // create the tuple expression
+                    let tuple_expr = def_eq_pat.default_expr(&idents, init_ids, ctx);
+
+                    match_arms.push((matched_pattern, guard, not_updated_signals, tuple_expr))
+                }
+
+                // default arm
+                let dflt_arm = {
+                    // create tuple pattern
+                    let elements = dflt_event_elems.clone();
+                    let pattern = Pattern::new(self.loc, pattern::Kind::tuple(elements));
+                    let guard = None;
+                    // create the tuple expression
+                    let expr = def_eq_pat.default_expr(&vec![], init_ids, ctx);
+                    debug_assert!(expr.is_normal_form());
+
+                    (pattern, guard, vec![], expr)
+                };
+                match_arms.push(dflt_arm);
+
+                // construct the match expression
+                let match_expr = {
+                    // create tuple expression to match
+                    let tuple_expr = {
+                        let elements = events_indices
+                            .iter()
+                            .sorted_by_key(|(_, idx)| **idx)
+                            .map(|(event_id, idx)| {
+                                ir1::stream::Expr::new(
+                                    match_arms[*idx].0.loc(),
+                                    ir1::stream::Kind::expr(ir1::expr::Kind::ident(*event_id)),
+                                )
+                            })
+                            .collect();
+                        ir1::stream::Expr::new(
+                            self.loc,
+                            ir1::stream::Kind::expr(ir1::expr::Kind::tuple(elements)),
+                        )
+                    };
+                    ir1::stream::Kind::expr(ir1::expr::Kind::match_expr(tuple_expr, match_arms))
+                };
+
+                self.kind = match_expr;
+                (stmts, inits)
+            }
             stream::Kind::SomeEvent { ref mut expr } => {
                 let (new_stmts, new_inits) =
                     expr.normal_form(components_reduced_graphs, identifier_creator, ctx);
@@ -1530,7 +1743,7 @@ impl Expr {
                     }
                 }
             }
-            stream::Kind::RisingEdge { .. } => noErrorDesc!(),
+            stream::Kind::WhenExpr { .. } | stream::Kind::RisingEdge { .. } => noErrorDesc!(),
         }
     }
 }

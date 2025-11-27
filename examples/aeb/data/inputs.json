@@ -3,109 +3,81 @@
         0,
         {
             "variant": "SpeedKmH",
-            "value": 32.0
-        }
-    ],
-    [
-        1000,
-        {
-            "variant": "PedestrianL",
-            "value": 20.0
-        }
-    ],
-    [
-        1200,
-        {
-            "variant": "SpeedKmH",
-            "value": 30.0
-        }
-    ],
-    [
-        1500,
-        {
-            "variant": "SpeedKmH",
-            "value": 25.0
-        }
-    ],
-    [
-        4000,
-        {
-            "variant": "SpeedKmH",
             "value": 50.0
         }
     ],
     [
-        4800,
+        800,
         {
             "variant": "PedestrianL",
             "value": 10.0
         }
     ],
     [
-        4900,
+        900,
         {
             "variant": "SpeedKmH",
             "value": 45.0
         }
     ],
     [
-        5000,
+        1000,
         {
             "variant": "PedestrianL",
             "value": 8.8
         }
     ],
     [
-        5400,
+        1400,
         {
             "variant": "SpeedKmH",
             "value": 30.0
         }
     ],
     [
-        6000,
+        2000,
         {
             "variant": "SpeedKmH",
             "value": 10.0
         }
     ],
     [
-        6500,
+        2500,
         {
             "variant": "PedestrianL",
             "value": 4.2
         }
     ],
     [
-        6800,
+        2800,
         {
             "variant": "PedestrianR",
             "value": 0.8
         }
     ],
     [
-        7000,
+        3000,
         {
             "variant": "SpeedKmH",
             "value": 15.0
         }
     ],
     [
-        8000,
+        4000,
         {
             "variant": "SpeedKmH",
             "value": 35.0
         }
     ],
     [
-        9000,
+        5000,
         {
             "variant": "SpeedKmH",
             "value": 50.0
         }
     ],
     [
-        9100,
+        5100,
         {
             "variant": "PedestrianR",
             "value": 30.0

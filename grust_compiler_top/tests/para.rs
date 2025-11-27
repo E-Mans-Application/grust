@@ -14,7 +14,7 @@ fn should_compile_para() {
                 }
                 e0? if e0 > prev_s2 => {
                     s2 = e0;
-                    e1 = emit e0 / (e0 - s2);
+                    e1 = emit e0 / (e0 - prev_s2);
                 }
                 e0? => {
                     s2 = e0;
@@ -28,15 +28,14 @@ fn should_compile_para() {
                 init => {
                     s3 = 0;
                 }
+                e1? if e1 > 1 => {
+                    s3 = e1;
+                    e3 = emit (last s3);
+                }
                 e1? => {
                     s3 = e1;
                 }
-                prev_s3 > 0 => {
-                    s3 = prev_s3;
-                    e3 = emit prev_s3;
-                }
             }
-            let prev_s3: int = last s3;
         }
 
         component C3(s2: int) -> (e2: int?) {
@@ -48,28 +47,19 @@ fn should_compile_para() {
         }
 
         component C5(s4: int, s3: int, e3: int?) -> (o: int) {
-            when {
-                init => {
-                    o = 0;
-                }
-                e3? => {
-                    o = e3;
-                }
-                s4 <= 0 => {
-                    o = prev_o*2;
-                }
-                s3 >= 0 => {
-                    o = s3;
-                }
-            }
-            let prev_o: int = last o;
+            o = when {
+                init => 0,
+                e3? => e3,
+                s4 > 0 => s4*2,
+                s3 >= 0 => s3,
+            };
         }
 
-        service para_mess {
+        service para_mess @ [10, 3000] {
             let (signal s2: int, event e1: int) = C1(e0);
             let (signal s3: int, event e3: int) = C2(e1);
-            let (event e2: int) = C3(s2);
-            let (signal s4: int) = C4(e2);
+            let event e2: int = C3(s2);
+            let signal s4: int = C4(e2);
             o1 = C5(s4, s3, e3);
         }
     };

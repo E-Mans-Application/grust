@@ -115,11 +115,11 @@ impl grust::core::Component for ProcessSetSpeedState {
     fn step(&mut self, input: ProcessSetSpeedInput) -> ProcessSetSpeedOutput {
         let prev_v_set = self.last_v_set;
         let v_set = match (input.set_speed) {
-            (Some(v)) => threshold_set_speed(v),
-            (_) => {
-                let v_set = self.last_v_set;
+            (Some(v)) => {
+                let v_set = threshold_set_speed(v);
                 v_set
             }
+            (_) => self.last_v_set,
         };
         let v_update = prev_v_set != v_set;
         self.last_v_set = v_set;
@@ -155,13 +155,14 @@ impl grust::core::Component for SpeedLimiterOnState {
         let prev_hysterisis = self.last_hysterisis;
         let kickdown_state = match (input.kickdown) {
             (Some(Kickdown::Activated)) if input.prev_on_state == SpeedLimiterOn::Actif => {
-                Kickdown::Activated
-            }
-            (Some(Kickdown::Deactivated)) => Kickdown::Deactivated,
-            (_) => {
-                let kickdown_state = self.last_kickdown_state;
+                let kickdown_state = Kickdown::Activated;
                 kickdown_state
             }
+            (Some(Kickdown::Deactivated)) => {
+                let kickdown_state = Kickdown::Deactivated;
+                kickdown_state
+            }
+            (_) => self.last_kickdown_state,
         };
         let (hysterisis, on_state) = match input.prev_on_state {
             _ if kickdown_state == Kickdown::Activated => {
@@ -242,17 +243,22 @@ impl grust::core::Component for SpeedLimiterState {
         let prev_on_state = self.last_on_state;
         let state = match (input.activation_req, input.failure) {
             (Some(activation_req), _) if activation_req == ActivationRequest::Off => {
-                SpeedLimiter::Off
-            }
-            (Some(ActivationRequest::On), _) if prev_state == SpeedLimiter::Off => SpeedLimiter::On,
-            (_, Some(failure)) if failure == Failure::Entering => SpeedLimiter::Fail,
-            (_, Some(f)) if (f == Failure::Recovered) && (prev_state == SpeedLimiter::Fail) => {
-                SpeedLimiter::On
-            }
-            (_, _) => {
-                let state = self.last_state;
+                let state = SpeedLimiter::Off;
                 state
             }
+            (Some(ActivationRequest::On), _) if prev_state == SpeedLimiter::Off => {
+                let state = SpeedLimiter::On;
+                state
+            }
+            (_, Some(failure)) if failure == Failure::Entering => {
+                let state = SpeedLimiter::Fail;
+                state
+            }
+            (_, Some(f)) if (f == Failure::Recovered) && (prev_state == SpeedLimiter::Fail) => {
+                let state = SpeedLimiter::On;
+                state
+            }
+            (_, _) => self.last_state,
         };
         let (state_update, on_state, in_regulation) = match prev_state {
             SpeedLimiter::On => {
@@ -516,16 +522,16 @@ pub mod runtime {
                 }
             }
             #[derive(Clone, Copy, PartialEq, Default, Debug)]
-            pub struct ChangedSetSpeedOld(f64, bool);
-            impl ChangedSetSpeedOld {
-                pub fn set(&mut self, changed_set_speed_old: f64) {
-                    self.1 = self.0 != changed_set_speed_old;
-                    self.0 = changed_set_speed_old;
+            pub struct InRegulationOld(bool, bool);
+            impl InRegulationOld {
+                pub fn set(&mut self, in_regulation_old: bool) {
+                    self.1 = self.0 != in_regulation_old;
+                    self.0 = in_regulation_old;
                 }
-                pub fn get(&self) -> f64 {
+                pub fn get(&self) -> bool {
                     self.0
                 }
-                pub fn take(&mut self) -> f64 {
+                pub fn take(&mut self) -> bool {
                     std::mem::take(&mut self.0)
                 }
                 pub fn is_new(&self) -> bool {
@@ -576,16 +582,16 @@ pub mod runtime {
                 }
             }
             #[derive(Clone, Copy, PartialEq, Default, Debug)]
-            pub struct InRegulationOld(bool, bool);
-            impl InRegulationOld {
-                pub fn set(&mut self, in_regulation_old: bool) {
-                    self.1 = self.0 != in_regulation_old;
-                    self.0 = in_regulation_old;
+            pub struct ChangedSetSpeedOld(f64, bool);
+            impl ChangedSetSpeedOld {
+                pub fn set(&mut self, changed_set_speed_old: f64) {
+                    self.1 = self.0 != changed_set_speed_old;
+                    self.0 = changed_set_speed_old;
                 }
-                pub fn get(&self) -> bool {
+                pub fn get(&self) -> f64 {
                     self.0
                 }
-                pub fn take(&mut self) -> bool {
+                pub fn take(&mut self) -> f64 {
                     std::mem::take(&mut self.0)
                 }
                 pub fn is_new(&self) -> bool {
@@ -702,10 +708,10 @@ pub mod runtime {
             pub v_update: ctx_ty::VUpdate,
             pub vacuum_brake: ctx_ty::VacuumBrake,
             pub speed: ctx_ty::Speed,
-            pub changed_set_speed_old: ctx_ty::ChangedSetSpeedOld,
+            pub in_regulation_old: ctx_ty::InRegulationOld,
             pub set_speed: ctx_ty::SetSpeed,
             pub v_set_aux: ctx_ty::VSetAux,
-            pub in_regulation_old: ctx_ty::InRegulationOld,
+            pub changed_set_speed_old: ctx_ty::ChangedSetSpeedOld,
             pub v_set: ctx_ty::VSet,
             pub in_regulation_aux: ctx_ty::InRegulationAux,
             pub x: ctx_ty::X,
@@ -721,10 +727,10 @@ pub mod runtime {
                 self.v_update.reset();
                 self.vacuum_brake.reset();
                 self.speed.reset();
-                self.changed_set_speed_old.reset();
+                self.in_regulation_old.reset();
                 self.set_speed.reset();
                 self.v_set_aux.reset();
-                self.in_regulation_old.reset();
+                self.changed_set_speed_old.reset();
                 self.v_set.reset();
                 self.in_regulation_aux.reset();
                 self.x.reset();

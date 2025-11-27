@@ -7,6 +7,7 @@ pub(crate) mod once_cell;
 
 pub mod contract;
 pub mod ctx;
+pub mod event_pattern;
 pub mod expr;
 pub mod memory;
 pub mod pattern;
@@ -60,6 +61,8 @@ pub fn from_ast_timed(
         .generate_dependency_graphs(symbols, sub_stats, errors),);
     check_errors!("causality analysis (ir1)", |_| ir1
         .causality_analysis(symbols, errors));
+    check_errors!("reactive-type-checking (ir1)", |_| ir1
+        .react_typ_check(symbols, errors));
     check_errors!("normalization (ir1)", |_| ir1.normalize(symbols, errors));
     Ok(ir1)
 }

@@ -211,9 +211,7 @@ pub mod runtime {
                         .input_store
                         .float_signal
                         .replace((float_signal, _float_signal_instant));
-                    assert!
-                    (unique.is_none(),
-                    "flow `float_signal` changes twice within one minimal delay of the service, consider reducing this delay");
+                    assert ! (unique . is_none () , "flow `float_signal` changes twice within one minimal delay of the service, consider reducing this delay");
                 }
                 Ok(())
             }

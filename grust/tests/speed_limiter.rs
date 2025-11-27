@@ -145,6 +145,7 @@ grust! {
         vdc_disabled: VdcState,
         speed: float,
         v_set: float,
+        clock: float?,
     ) -> (
         state: SpeedLimiter,
         on_state: SpeedLimiterOn,
@@ -154,50 +155,56 @@ grust! {
         let failure: bool = false;
         let prev_state: SpeedLimiter = last state;
         let prev_on_state: SpeedLimiterOn = last on_state;
-        init (state, on_state, in_regulation) = (SpeedLimiter::Off, SpeedLimiterOn::StandBy, true);
-        match prev_state {
-            _ if off_condition(activation_req, vdc_disabled) => {
-                state = SpeedLimiter::Off;
-                on_state = prev_on_state;
-                in_regulation = false;
-            },
-            SpeedLimiter::Off if on_condition(activation_req) => {
-                match failure {
-                    true => {
+        when {
+            init => {
+                (state, on_state, in_regulation) = (SpeedLimiter::Off, SpeedLimiterOn::StandBy, true);
+            }
+            clock? => {
+                match prev_state {
+                    _ if off_condition(activation_req, vdc_disabled) => {
+                        state = SpeedLimiter::Off;
+                        on_state = prev_on_state;
+                        in_regulation = false;
+                    },
+                    SpeedLimiter::Off if on_condition(activation_req) => {
+                        match failure {
+                            true => {
+                                state = SpeedLimiter::Fail;
+                                on_state = prev_on_state;
+                                in_regulation = false;
+                            },
+                            false => {
+                                state = SpeedLimiter::On;
+                                on_state = SpeedLimiterOn::StandBy;
+                                in_regulation = true;
+                            },
+                        }
+                    },
+                    SpeedLimiter::On if failure => {
                         state = SpeedLimiter::Fail;
                         on_state = prev_on_state;
                         in_regulation = false;
                     },
-                    false => {
+                    SpeedLimiter::Fail if !failure => {
                         state = SpeedLimiter::On;
                         on_state = SpeedLimiterOn::StandBy;
                         in_regulation = true;
                     },
+                    SpeedLimiter::On => {
+                        state = prev_state;
+                        (on_state, in_regulation) = speed_limiter_on(
+                            prev_on_state, activation_req,
+                            vacuum_brake_state,
+                            kickdown, speed, v_set,
+                        );
+                    },
+                    _ => {
+                        state = prev_state;
+                        on_state = prev_on_state;
+                        in_regulation = last in_regulation;
+                    },
                 }
-            },
-            SpeedLimiter::On if failure => {
-                state = SpeedLimiter::Fail;
-                on_state = prev_on_state;
-                in_regulation = false;
-            },
-            SpeedLimiter::Fail if !failure => {
-                state = SpeedLimiter::On;
-                on_state = SpeedLimiterOn::StandBy;
-                in_regulation = true;
-            },
-            SpeedLimiter::On => {
-                state = prev_state;
-                (on_state, in_regulation) = speed_limiter_on(
-                    prev_on_state, activation_req,
-                    vacuum_brake_state,
-                    kickdown, speed, v_set,
-                );
-            },
-            _ => {
-                state = prev_state;
-                on_state = prev_on_state;
-                in_regulation = last in_regulation;
-            },
+            }
         }
         state_update = state != prev_state || on_state != prev_on_state;
     }
@@ -254,6 +261,7 @@ grust! {
     }
 
     service speed_limiter {
+        let event clock: float = period(1000);
         let (signal v_set_aux: float, signal v_update: bool) = process_set_speed(set_speed);
         let (
             signal state: SpeedLimiter,
@@ -267,6 +275,7 @@ grust! {
             vdc,
             speed,
             v_set,
+            clock,
         );
         v_set = v_set_aux;
         in_regulation = in_regulation_aux;

@@ -29,6 +29,7 @@ pub mod check;
 mod either;
 mod hash_map;
 mod location;
+mod react_typ;
 mod scope;
 mod typ;
 

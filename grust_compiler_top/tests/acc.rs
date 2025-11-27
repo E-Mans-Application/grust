@@ -64,7 +64,7 @@ fn should_compile_acc() {
         }
 
         // Returns the activation condition of the ACC.
-        component activate(acc_active: Activation?, distance_m: float) -> (condition: bool) {
+        component activate(acc_active: Activation?, change: float?, distance_m: float) -> (condition: bool) {
             init distance_m = 0.;
             when {
                 init => {
@@ -74,10 +74,10 @@ fn should_compile_acc() {
                 acc_active? => {
                     let active: bool = acc_active == Activation::On;
                 }
-                distance_m < last distance_m => {
+                change? if distance_m < last distance_m => {
                     let approaching: bool = true;
                 }
-                distance_m >= last distance_m => {
+                change? if distance_m >= last distance_m => {
                     let approaching: bool = false;
                 }
             }
@@ -85,16 +85,20 @@ fn should_compile_acc() {
         }
 
         // Filters the ACC to activated only when activated and our vehicle approaches the front vehicle.
-        component filtered_acc(condition: bool, distance_m: float, sv_v_km_h: float, t_ms: float) -> (brakes_m_s: float) {
-            match condition {
-                true => {
+        component filtered_acc(clock: float?, condition: bool, distance_m: float, sv_v_km_h: float, t_ms: float) -> (brakes_m_s: float) {
+            when {
+                init => {
+                    brakes_command_m_s = 0.;
+                    brakes_m_s = 0.;
+                }
+                clock? if condition => {
                     let brakes_command_m_s: float = command(distance_m, sv_v_km_h, t_ms);
                     brakes_m_s = pid(sv_v_km_h, brakes_command_m_s, t_ms);
-                },
-                false => {
+                }
+                !condition => {
                     let brakes_command_m_s: float = 0.;
                     brakes_m_s = 0.;
-                },
+                }
             }
         }
 
@@ -112,8 +116,9 @@ fn should_compile_acc() {
         // Our goal is to keep `d_grace` above zero, by controlling the brakes.
         service adaptive_cruise_control @ [10, 3000] {
             let signal t: float = time();
-            let signal condition: bool = activate(acc_active, distance_m);
-            brakes_m_s = filtered_acc(condition, distance_m, speed_km_h, t);
+            let signal condition: bool = activate(acc_active, on_change(distance_m), distance_m);
+            let event clock: float = period(1000);
+            brakes_m_s = filtered_acc(clock, condition, distance_m, speed_km_h, t);
         }
     };
     let (ast, mut ctx) = top.init();

@@ -272,6 +272,7 @@ pub struct SpeedLimiterInput {
     pub vdc_disabled: VdcState,
     pub speed: f64,
     pub v_set: f64,
+    pub clock: Option<f64>,
 }
 pub struct SpeedLimiterOutput {
     pub state: SpeedLimiter,
@@ -300,67 +301,73 @@ impl grust::core::Component for SpeedLimiterState {
         let failure = false;
         let prev_state = self.last_state;
         let prev_on_state = self.last_on_state;
-        let (in_regulation, on_state, state) = match prev_state {
-            _ if off_condition(input.activation_req, input.vdc_disabled) => {
-                let state = SpeedLimiter::Off;
-                let on_state = prev_on_state;
-                let in_regulation = false;
-                (in_regulation, on_state, state)
-            }
-            SpeedLimiter::Off if on_condition(input.activation_req) => {
-                let (in_regulation, on_state, state) = match failure {
-                    true => {
+        let (in_regulation, on_state, state) = match (input.clock) {
+            (Some(clock)) => {
+                let (in_regulation, on_state, state) = match prev_state {
+                    _ if off_condition(input.activation_req, input.vdc_disabled) => {
+                        let state = SpeedLimiter::Off;
+                        let on_state = prev_on_state;
+                        let in_regulation = false;
+                        (in_regulation, on_state, state)
+                    }
+                    SpeedLimiter::Off if on_condition(input.activation_req) => {
+                        let (in_regulation, on_state, state) = match failure {
+                            true => {
+                                let state = SpeedLimiter::Fail;
+                                let on_state = prev_on_state;
+                                let in_regulation = false;
+                                (in_regulation, on_state, state)
+                            }
+                            false => {
+                                let state = SpeedLimiter::On;
+                                let on_state = SpeedLimiterOn::StandBy;
+                                let in_regulation = true;
+                                (in_regulation, on_state, state)
+                            }
+                        };
+                        (in_regulation, on_state, state)
+                    }
+                    SpeedLimiter::On if failure => {
                         let state = SpeedLimiter::Fail;
                         let on_state = prev_on_state;
                         let in_regulation = false;
                         (in_regulation, on_state, state)
                     }
-                    false => {
+                    SpeedLimiter::Fail if !(failure) => {
                         let state = SpeedLimiter::On;
                         let on_state = SpeedLimiterOn::StandBy;
                         let in_regulation = true;
                         (in_regulation, on_state, state)
                     }
+                    SpeedLimiter::On => {
+                        let state = prev_state;
+                        let (on_state, in_regulation) = {
+                            let SpeedLimiterOnOutput { on_state, in_reg } =
+                                <SpeedLimiterOnState as grust::core::Component>::step(
+                                    &mut self.speed_limiter_on,
+                                    SpeedLimiterOnInput {
+                                        prev_on_state: prev_on_state,
+                                        activation_req: input.activation_req,
+                                        vacuum_brake_state: input.vacuum_brake_state,
+                                        kickdown: input.kickdown,
+                                        speed: input.speed,
+                                        v_set: input.v_set,
+                                    },
+                                );
+                            (on_state, in_reg)
+                        };
+                        (in_regulation, on_state, state)
+                    }
+                    _ => {
+                        let state = prev_state;
+                        let on_state = prev_on_state;
+                        let in_regulation = self.last_in_regulation;
+                        (in_regulation, on_state, state)
+                    }
                 };
                 (in_regulation, on_state, state)
             }
-            SpeedLimiter::On if failure => {
-                let state = SpeedLimiter::Fail;
-                let on_state = prev_on_state;
-                let in_regulation = false;
-                (in_regulation, on_state, state)
-            }
-            SpeedLimiter::Fail if !(failure) => {
-                let state = SpeedLimiter::On;
-                let on_state = SpeedLimiterOn::StandBy;
-                let in_regulation = true;
-                (in_regulation, on_state, state)
-            }
-            SpeedLimiter::On => {
-                let state = prev_state;
-                let (on_state, in_regulation) = {
-                    let SpeedLimiterOnOutput { on_state, in_reg } =
-                        <SpeedLimiterOnState as grust::core::Component>::step(
-                            &mut self.speed_limiter_on,
-                            SpeedLimiterOnInput {
-                                prev_on_state: prev_on_state,
-                                activation_req: input.activation_req,
-                                vacuum_brake_state: input.vacuum_brake_state,
-                                kickdown: input.kickdown,
-                                speed: input.speed,
-                                v_set: input.v_set,
-                            },
-                        );
-                    (on_state, in_reg)
-                };
-                (in_regulation, on_state, state)
-            }
-            _ => {
-                let state = prev_state;
-                let on_state = prev_on_state;
-                let in_regulation = self.last_in_regulation;
-                (in_regulation, on_state, state)
-            }
+            (_) => (self.last_in_regulation, self.last_on_state, self.last_state),
         };
         let state_update = (state != prev_state) || (on_state != prev_on_state);
         self.last_in_regulation = in_regulation;
@@ -379,17 +386,19 @@ pub mod runtime {
     use grust::futures::{sink::SinkExt, stream::StreamExt};
     #[derive(Debug)]
     pub enum RuntimeInput {
-        Vdc(VdcState, std::time::Instant),
-        Speed(f64, std::time::Instant),
         VacuumBrake(VacuumBrakeState, std::time::Instant),
         Activation(ActivationRequest, std::time::Instant),
         Kickdown(KickdownState, std::time::Instant),
         SetSpeed(f64, std::time::Instant),
+        Vdc(VdcState, std::time::Instant),
+        Speed(f64, std::time::Instant),
+        Timer(T, std::time::Instant),
     }
     use RuntimeInput as I;
     impl grust::core::priority_stream::Reset for RuntimeInput {
         fn do_reset(&self) -> bool {
             match self {
+                I::Timer(timer, _) => grust::core::timer_stream::Timing::do_reset(timer),
                 _ => false,
             }
         }
@@ -397,12 +406,13 @@ pub mod runtime {
     impl PartialEq for RuntimeInput {
         fn eq(&self, other: &Self) -> bool {
             match (self, other) {
-                (I::Vdc(this, _), I::Vdc(other, _)) => this.eq(other),
-                (I::Speed(this, _), I::Speed(other, _)) => this.eq(other),
                 (I::VacuumBrake(this, _), I::VacuumBrake(other, _)) => this.eq(other),
                 (I::Activation(this, _), I::Activation(other, _)) => this.eq(other),
                 (I::Kickdown(this, _), I::Kickdown(other, _)) => this.eq(other),
                 (I::SetSpeed(this, _), I::SetSpeed(other, _)) => this.eq(other),
+                (I::Vdc(this, _), I::Vdc(other, _)) => this.eq(other),
+                (I::Speed(this, _), I::Speed(other, _)) => this.eq(other),
+                (I::Timer(this, _), I::Timer(other, _)) => this.eq(other),
                 _ => false,
             }
         }
@@ -410,12 +420,13 @@ pub mod runtime {
     impl RuntimeInput {
         pub fn get_instant(&self) -> std::time::Instant {
             match self {
-                I::Vdc(_, _grust_reserved_instant) => *_grust_reserved_instant,
-                I::Speed(_, _grust_reserved_instant) => *_grust_reserved_instant,
                 I::VacuumBrake(_, _grust_reserved_instant) => *_grust_reserved_instant,
                 I::Activation(_, _grust_reserved_instant) => *_grust_reserved_instant,
                 I::Kickdown(_, _grust_reserved_instant) => *_grust_reserved_instant,
                 I::SetSpeed(_, _grust_reserved_instant) => *_grust_reserved_instant,
+                I::Vdc(_, _grust_reserved_instant) => *_grust_reserved_instant,
+                I::Speed(_, _grust_reserved_instant) => *_grust_reserved_instant,
+                I::Timer(_, _grust_reserved_instant) => *_grust_reserved_instant,
             }
         }
         pub fn order(v1: &Self, v2: &Self) -> std::cmp::Ordering {
@@ -430,39 +441,73 @@ pub mod runtime {
     use RuntimeOutput as O;
     #[derive(Debug, Default)]
     pub struct RuntimeInit {
-        pub vdc: VdcState,
-        pub speed: f64,
         pub vacuum_brake: VacuumBrakeState,
         pub activation: ActivationRequest,
         pub kickdown: KickdownState,
         pub set_speed: f64,
+        pub vdc: VdcState,
+        pub speed: f64,
+    }
+    #[derive(Debug, PartialEq)]
+    pub enum RuntimeTimer {
+        PeriodClock,
+        PeriodClock1,
+    }
+    use RuntimeTimer as T;
+    impl grust::core::timer_stream::Timing for RuntimeTimer {
+        fn get_duration(&self) -> std::time::Duration {
+            match self {
+                T::PeriodClock => std::time::Duration::from_millis(1000u64),
+                T::PeriodClock1 => std::time::Duration::from_millis(1000u64),
+            }
+        }
+        fn do_reset(&self) -> bool {
+            match self {
+                T::PeriodClock => false,
+                T::PeriodClock1 => false,
+            }
+        }
     }
     pub struct Runtime {
         _grust_reserved_init_instant: std::time::Instant,
         speed_limiter: speed_limiter_service::SpeedLimiterService,
         another_speed_limiter: another_speed_limiter_service::AnotherSpeedLimiterService,
         output: grust::futures::channel::mpsc::Sender<O>,
+        timer: grust::futures::channel::mpsc::Sender<(T, std::time::Instant)>,
     }
     impl Runtime {
         pub fn new(
             _grust_reserved_init_instant: std::time::Instant,
             output: grust::futures::channel::mpsc::Sender<O>,
+            timer: grust::futures::channel::mpsc::Sender<(T, std::time::Instant)>,
         ) -> Runtime {
             let speed_limiter = speed_limiter_service::SpeedLimiterService::init(
                 _grust_reserved_init_instant,
                 output.clone(),
+                timer.clone(),
             );
             let another_speed_limiter =
                 another_speed_limiter_service::AnotherSpeedLimiterService::init(
                     _grust_reserved_init_instant,
                     output.clone(),
+                    timer.clone(),
                 );
             Runtime {
                 _grust_reserved_init_instant,
                 speed_limiter,
                 another_speed_limiter,
                 output,
+                timer,
             }
+        }
+        #[inline]
+        pub async fn send_timer(
+            &mut self,
+            timer: T,
+            instant: std::time::Instant,
+        ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+            self.timer.send((timer, instant)).await?;
+            Ok(())
         }
         pub async fn run_loop(
             self,
@@ -472,31 +517,27 @@ pub mod runtime {
             grust::futures::pin_mut!(input);
             let mut runtime = self;
             let RuntimeInit {
-                vdc,
-                speed,
                 vacuum_brake,
                 activation,
                 kickdown,
                 set_speed,
+                vdc,
+                speed,
             } = init_vals;
             runtime
                 .speed_limiter
-                .handle_init(vdc, speed, vacuum_brake, activation, kickdown, set_speed)
+                .handle_init(vacuum_brake, activation, kickdown, set_speed, vdc, speed)
                 .await?;
             runtime
                 .another_speed_limiter
-                .handle_init(vdc, speed, vacuum_brake, activation, kickdown, set_speed)
+                .handle_init(vacuum_brake, activation, kickdown, set_speed, vdc, speed)
                 .await?;
             while let Some(input) = input.next().await {
                 match input {
-                    I::VacuumBrake(vacuum_brake, _grust_reserved_instant) => {
-                        runtime
-                            .speed_limiter
-                            .handle_vacuum_brake(_grust_reserved_instant, vacuum_brake)
-                            .await?;
+                    I::Timer(T::PeriodClock1, _grust_reserved_instant) => {
                         runtime
                             .another_speed_limiter
-                            .handle_vacuum_brake(_grust_reserved_instant, vacuum_brake)
+                            .handle_period_clock_1(_grust_reserved_instant)
                             .await?;
                     }
                     I::Speed(speed, _grust_reserved_instant) => {
@@ -507,6 +548,32 @@ pub mod runtime {
                         runtime
                             .another_speed_limiter
                             .handle_speed(_grust_reserved_instant, speed)
+                            .await?;
+                    }
+                    I::Timer(T::PeriodClock, _grust_reserved_instant) => {
+                        runtime
+                            .speed_limiter
+                            .handle_period_clock(_grust_reserved_instant)
+                            .await?;
+                    }
+                    I::SetSpeed(set_speed, _grust_reserved_instant) => {
+                        runtime
+                            .speed_limiter
+                            .handle_set_speed(_grust_reserved_instant, set_speed)
+                            .await?;
+                        runtime
+                            .another_speed_limiter
+                            .handle_set_speed(_grust_reserved_instant, set_speed)
+                            .await?;
+                    }
+                    I::VacuumBrake(vacuum_brake, _grust_reserved_instant) => {
+                        runtime
+                            .speed_limiter
+                            .handle_vacuum_brake(_grust_reserved_instant, vacuum_brake)
+                            .await?;
+                        runtime
+                            .another_speed_limiter
+                            .handle_vacuum_brake(_grust_reserved_instant, vacuum_brake)
                             .await?;
                     }
                     I::Activation(activation, _grust_reserved_instant) => {
@@ -527,16 +594,6 @@ pub mod runtime {
                         runtime
                             .another_speed_limiter
                             .handle_kickdown(_grust_reserved_instant, kickdown)
-                            .await?;
-                    }
-                    I::SetSpeed(set_speed, _grust_reserved_instant) => {
-                        runtime
-                            .speed_limiter
-                            .handle_set_speed(_grust_reserved_instant, set_speed)
-                            .await?;
-                        runtime
-                            .another_speed_limiter
-                            .handle_set_speed(_grust_reserved_instant, set_speed)
                             .await?;
                     }
                     I::Vdc(vdc, _grust_reserved_instant) => {
@@ -879,21 +936,23 @@ pub mod runtime {
         }
         #[derive(Default)]
         pub struct SpeedLimiterServiceStore {
-            vdc: Option<(VdcState, std::time::Instant)>,
-            speed: Option<(f64, std::time::Instant)>,
             vacuum_brake: Option<(VacuumBrakeState, std::time::Instant)>,
             activation: Option<(ActivationRequest, std::time::Instant)>,
+            period_clock: Option<((), std::time::Instant)>,
             kickdown: Option<(KickdownState, std::time::Instant)>,
             set_speed: Option<(f64, std::time::Instant)>,
+            vdc: Option<(VdcState, std::time::Instant)>,
+            speed: Option<(f64, std::time::Instant)>,
         }
         impl SpeedLimiterServiceStore {
             pub fn not_empty(&self) -> bool {
-                self.vdc.is_some()
-                    || self.speed.is_some()
-                    || self.vacuum_brake.is_some()
+                self.vacuum_brake.is_some()
                     || self.activation.is_some()
+                    || self.period_clock.is_some()
                     || self.kickdown.is_some()
                     || self.set_speed.is_some()
+                    || self.vdc.is_some()
+                    || self.speed.is_some()
             }
         }
         pub struct SpeedLimiterService {
@@ -904,11 +963,13 @@ pub mod runtime {
             process_set_speed: ProcessSetSpeedState,
             speed_limiter: SpeedLimiterState,
             output: grust::futures::channel::mpsc::Sender<O>,
+            timer: grust::futures::channel::mpsc::Sender<(T, std::time::Instant)>,
         }
         impl SpeedLimiterService {
             pub fn init(
                 _grust_reserved_init_instant: std::time::Instant,
                 output: grust::futures::channel::mpsc::Sender<O>,
+                timer: grust::futures::channel::mpsc::Sender<(T, std::time::Instant)>,
             ) -> SpeedLimiterService {
                 let context = Context::init();
                 let delayed = true;
@@ -923,18 +984,22 @@ pub mod runtime {
                     process_set_speed,
                     speed_limiter,
                     output,
+                    timer,
                 }
             }
             pub async fn handle_init(
                 &mut self,
-                vdc: VdcState,
-                speed: f64,
                 vacuum_brake: VacuumBrakeState,
                 activation: ActivationRequest,
                 kickdown: KickdownState,
                 set_speed: f64,
+                vdc: VdcState,
+                speed: f64,
             ) -> Result<(), grust::futures::channel::mpsc::SendError> {
                 let _grust_reserved_instant = self._grust_reserved_init_instant;
+                let clock_ref = &mut None;
+                self.context.speed.set(speed);
+                self.context.vdc.set(vdc);
                 self.context.set_speed.set(set_speed);
                 let ProcessSetSpeedOutput {
                     v_set: v_set_aux,
@@ -955,10 +1020,15 @@ pub mod runtime {
                 )
                 .await?;
                 self.context.kickdown.set(kickdown);
+                self.send_timer(T::PeriodClock, _grust_reserved_instant)
+                    .await?;
+                *clock_ref = Some(
+                    (_grust_reserved_instant
+                        .duration_since(self._grust_reserved_init_instant)
+                        .as_millis()) as f64,
+                );
                 self.context.activation.set(activation);
                 self.context.vacuum_brake.set(vacuum_brake);
-                self.context.speed.set(speed);
-                self.context.vdc.set(vdc);
                 let SpeedLimiterOutput {
                     state: state,
                     on_state: on_state,
@@ -973,6 +1043,7 @@ pub mod runtime {
                         vdc_disabled: vdc,
                         speed: speed,
                         v_set: v_set,
+                        clock: *clock_ref,
                     },
                 );
                 self.context.state.set(state);
@@ -986,110 +1057,6 @@ pub mod runtime {
                     _grust_reserved_instant,
                 )
                 .await?;
-                Ok(())
-            }
-            pub async fn handle_vdc(
-                &mut self,
-                _vdc_instant: std::time::Instant,
-                vdc: VdcState,
-            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
-                if self.delayed {
-                    self.reset_time_constraints(_vdc_instant).await?;
-                    self.context.reset();
-                    self.context.vdc.set(vdc);
-                    if self.context.activation.is_new()
-                        || self.context.vacuum_brake.is_new()
-                        || self.context.kickdown.is_new()
-                        || self.context.vdc.is_new()
-                        || self.context.speed.is_new()
-                        || self.context.v_set.is_new()
-                    {
-                        let SpeedLimiterOutput {
-                            state: state,
-                            on_state: on_state,
-                            in_regulation: in_regulation_aux,
-                            state_update: state_update,
-                        } = <SpeedLimiterState as grust::core::Component>::step(
-                            &mut self.speed_limiter,
-                            SpeedLimiterInput {
-                                activation_req: self.context.activation.get(),
-                                vacuum_brake_state: self.context.vacuum_brake.get(),
-                                kickdown: self.context.kickdown.get(),
-                                vdc_disabled: vdc,
-                                speed: self.context.speed.get(),
-                                v_set: self.context.v_set.get(),
-                            },
-                        );
-                        self.context.state.set(state);
-                        self.context.on_state.set(on_state);
-                        self.context.in_regulation_aux.set(in_regulation_aux);
-                        self.context.state_update.set(state_update);
-                    }
-                    let in_regulation = self.context.in_regulation_aux.get();
-                    self.context.in_regulation.set(in_regulation);
-                    if self.context.in_regulation.is_new() {
-                        self.send_output(
-                            O::InRegulation(in_regulation, _vdc_instant),
-                            _vdc_instant,
-                        )
-                        .await?;
-                    }
-                } else {
-                    let unique = self.input_store.vdc.replace((vdc, _vdc_instant));
-                    assert ! (unique . is_none () , "flow `vdc` changes twice within one minimal delay of the service, consider reducing this delay");
-                }
-                Ok(())
-            }
-            pub async fn handle_speed(
-                &mut self,
-                _speed_instant: std::time::Instant,
-                speed: f64,
-            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
-                if self.delayed {
-                    self.reset_time_constraints(_speed_instant).await?;
-                    self.context.reset();
-                    self.context.speed.set(speed);
-                    if self.context.activation.is_new()
-                        || self.context.vacuum_brake.is_new()
-                        || self.context.kickdown.is_new()
-                        || self.context.vdc.is_new()
-                        || self.context.speed.is_new()
-                        || self.context.v_set.is_new()
-                    {
-                        let SpeedLimiterOutput {
-                            state: state,
-                            on_state: on_state,
-                            in_regulation: in_regulation_aux,
-                            state_update: state_update,
-                        } = <SpeedLimiterState as grust::core::Component>::step(
-                            &mut self.speed_limiter,
-                            SpeedLimiterInput {
-                                activation_req: self.context.activation.get(),
-                                vacuum_brake_state: self.context.vacuum_brake.get(),
-                                kickdown: self.context.kickdown.get(),
-                                vdc_disabled: self.context.vdc.get(),
-                                speed: speed,
-                                v_set: self.context.v_set.get(),
-                            },
-                        );
-                        self.context.state.set(state);
-                        self.context.on_state.set(on_state);
-                        self.context.in_regulation_aux.set(in_regulation_aux);
-                        self.context.state_update.set(state_update);
-                    }
-                    let in_regulation = self.context.in_regulation_aux.get();
-                    self.context.in_regulation.set(in_regulation);
-                    if self.context.in_regulation.is_new() {
-                        self.send_output(
-                            O::InRegulation(in_regulation, _speed_instant),
-                            _speed_instant,
-                        )
-                        .await?;
-                    }
-                } else {
-                    let unique = self.input_store.speed.replace((speed, _speed_instant));
-                    assert ! (unique . is_none () , "flow `speed` changes twice within one minimal delay of the service, consider reducing this delay");
-                }
                 Ok(())
             }
             pub async fn handle_vacuum_brake(
@@ -1122,6 +1089,7 @@ pub mod runtime {
                                 vdc_disabled: self.context.vdc.get(),
                                 speed: self.context.speed.get(),
                                 v_set: self.context.v_set.get(),
+                                clock: None,
                             },
                         );
                         self.context.state.set(state);
@@ -1177,6 +1145,7 @@ pub mod runtime {
                                 vdc_disabled: self.context.vdc.get(),
                                 speed: self.context.speed.get(),
                                 v_set: self.context.v_set.get(),
+                                clock: None,
                             },
                         );
                         self.context.state.set(state);
@@ -1199,6 +1168,69 @@ pub mod runtime {
                         .activation
                         .replace((activation, _activation_instant));
                     assert ! (unique . is_none () , "flow `activation` changes twice within one minimal delay of the service, consider reducing this delay");
+                }
+                Ok(())
+            }
+            pub async fn handle_period_clock(
+                &mut self,
+                _period_clock_instant: std::time::Instant,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                if self.delayed {
+                    self.reset_time_constraints(_period_clock_instant).await?;
+                    self.context.reset();
+                    let clock_ref = &mut None;
+                    self.send_timer(T::PeriodClock, _period_clock_instant)
+                        .await?;
+                    *clock_ref = Some(
+                        (_period_clock_instant
+                            .duration_since(self._grust_reserved_init_instant)
+                            .as_millis()) as f64,
+                    );
+                    if clock_ref.is_some()
+                        || self.context.activation.is_new()
+                        || self.context.vacuum_brake.is_new()
+                        || self.context.kickdown.is_new()
+                        || self.context.vdc.is_new()
+                        || self.context.speed.is_new()
+                        || self.context.v_set.is_new()
+                    {
+                        let SpeedLimiterOutput {
+                            state: state,
+                            on_state: on_state,
+                            in_regulation: in_regulation_aux,
+                            state_update: state_update,
+                        } = <SpeedLimiterState as grust::core::Component>::step(
+                            &mut self.speed_limiter,
+                            SpeedLimiterInput {
+                                activation_req: self.context.activation.get(),
+                                vacuum_brake_state: self.context.vacuum_brake.get(),
+                                kickdown: self.context.kickdown.get(),
+                                vdc_disabled: self.context.vdc.get(),
+                                speed: self.context.speed.get(),
+                                v_set: self.context.v_set.get(),
+                                clock: *clock_ref,
+                            },
+                        );
+                        self.context.state.set(state);
+                        self.context.on_state.set(on_state);
+                        self.context.in_regulation_aux.set(in_regulation_aux);
+                        self.context.state_update.set(state_update);
+                    }
+                    let in_regulation = self.context.in_regulation_aux.get();
+                    self.context.in_regulation.set(in_regulation);
+                    if self.context.in_regulation.is_new() {
+                        self.send_output(
+                            O::InRegulation(in_regulation, _period_clock_instant),
+                            _period_clock_instant,
+                        )
+                        .await?;
+                    }
+                } else {
+                    let unique = self
+                        .input_store
+                        .period_clock
+                        .replace(((), _period_clock_instant));
+                    assert ! (unique . is_none () , "flow `period_clock` changes twice within one minimal delay of the service, consider reducing this delay");
                 }
                 Ok(())
             }
@@ -1232,6 +1264,7 @@ pub mod runtime {
                                 vdc_disabled: self.context.vdc.get(),
                                 speed: self.context.speed.get(),
                                 v_set: self.context.v_set.get(),
+                                clock: None,
                             },
                         );
                         self.context.state.set(state);
@@ -1306,6 +1339,7 @@ pub mod runtime {
                                 vdc_disabled: self.context.vdc.get(),
                                 speed: self.context.speed.get(),
                                 v_set: v_set,
+                                clock: None,
                             },
                         );
                         self.context.state.set(state);
@@ -1331,6 +1365,112 @@ pub mod runtime {
                 }
                 Ok(())
             }
+            pub async fn handle_vdc(
+                &mut self,
+                _vdc_instant: std::time::Instant,
+                vdc: VdcState,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                if self.delayed {
+                    self.reset_time_constraints(_vdc_instant).await?;
+                    self.context.reset();
+                    self.context.vdc.set(vdc);
+                    if self.context.activation.is_new()
+                        || self.context.vacuum_brake.is_new()
+                        || self.context.kickdown.is_new()
+                        || self.context.vdc.is_new()
+                        || self.context.speed.is_new()
+                        || self.context.v_set.is_new()
+                    {
+                        let SpeedLimiterOutput {
+                            state: state,
+                            on_state: on_state,
+                            in_regulation: in_regulation_aux,
+                            state_update: state_update,
+                        } = <SpeedLimiterState as grust::core::Component>::step(
+                            &mut self.speed_limiter,
+                            SpeedLimiterInput {
+                                activation_req: self.context.activation.get(),
+                                vacuum_brake_state: self.context.vacuum_brake.get(),
+                                kickdown: self.context.kickdown.get(),
+                                vdc_disabled: vdc,
+                                speed: self.context.speed.get(),
+                                v_set: self.context.v_set.get(),
+                                clock: None,
+                            },
+                        );
+                        self.context.state.set(state);
+                        self.context.on_state.set(on_state);
+                        self.context.in_regulation_aux.set(in_regulation_aux);
+                        self.context.state_update.set(state_update);
+                    }
+                    let in_regulation = self.context.in_regulation_aux.get();
+                    self.context.in_regulation.set(in_regulation);
+                    if self.context.in_regulation.is_new() {
+                        self.send_output(
+                            O::InRegulation(in_regulation, _vdc_instant),
+                            _vdc_instant,
+                        )
+                        .await?;
+                    }
+                } else {
+                    let unique = self.input_store.vdc.replace((vdc, _vdc_instant));
+                    assert ! (unique . is_none () , "flow `vdc` changes twice within one minimal delay of the service, consider reducing this delay");
+                }
+                Ok(())
+            }
+            pub async fn handle_speed(
+                &mut self,
+                _speed_instant: std::time::Instant,
+                speed: f64,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                if self.delayed {
+                    self.reset_time_constraints(_speed_instant).await?;
+                    self.context.reset();
+                    self.context.speed.set(speed);
+                    if self.context.activation.is_new()
+                        || self.context.vacuum_brake.is_new()
+                        || self.context.kickdown.is_new()
+                        || self.context.vdc.is_new()
+                        || self.context.speed.is_new()
+                        || self.context.v_set.is_new()
+                    {
+                        let SpeedLimiterOutput {
+                            state: state,
+                            on_state: on_state,
+                            in_regulation: in_regulation_aux,
+                            state_update: state_update,
+                        } = <SpeedLimiterState as grust::core::Component>::step(
+                            &mut self.speed_limiter,
+                            SpeedLimiterInput {
+                                activation_req: self.context.activation.get(),
+                                vacuum_brake_state: self.context.vacuum_brake.get(),
+                                kickdown: self.context.kickdown.get(),
+                                vdc_disabled: self.context.vdc.get(),
+                                speed: speed,
+                                v_set: self.context.v_set.get(),
+                                clock: None,
+                            },
+                        );
+                        self.context.state.set(state);
+                        self.context.on_state.set(on_state);
+                        self.context.in_regulation_aux.set(in_regulation_aux);
+                        self.context.state_update.set(state_update);
+                    }
+                    let in_regulation = self.context.in_regulation_aux.get();
+                    self.context.in_regulation.set(in_regulation);
+                    if self.context.in_regulation.is_new() {
+                        self.send_output(
+                            O::InRegulation(in_regulation, _speed_instant),
+                            _speed_instant,
+                        )
+                        .await?;
+                    }
+                } else {
+                    let unique = self.input_store.speed.replace((speed, _speed_instant));
+                    assert ! (unique . is_none () , "flow `speed` changes twice within one minimal delay of the service, consider reducing this delay");
+                }
+                Ok(())
+            }
             #[inline]
             pub async fn reset_time_constraints(
                 &mut self,
@@ -1345,6 +1485,15 @@ pub mod runtime {
                 instant: std::time::Instant,
             ) -> Result<(), grust::futures::channel::mpsc::SendError> {
                 self.output.feed(output).await?;
+                Ok(())
+            }
+            #[inline]
+            pub async fn send_timer(
+                &mut self,
+                timer: T,
+                instant: std::time::Instant,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                self.timer.feed((timer, instant)).await?;
                 Ok(())
             }
         }
@@ -1434,56 +1583,16 @@ pub mod runtime {
                 }
             }
             #[derive(Clone, Copy, PartialEq, Default, Debug)]
-            pub struct OnState(super::SpeedLimiterOn, bool);
-            impl OnState {
-                pub fn set(&mut self, on_state: super::SpeedLimiterOn) {
-                    self.1 = self.0 != on_state;
-                    self.0 = on_state;
+            pub struct StateUpdate(bool, bool);
+            impl StateUpdate {
+                pub fn set(&mut self, state_update: bool) {
+                    self.1 = self.0 != state_update;
+                    self.0 = state_update;
                 }
-                pub fn get(&self) -> super::SpeedLimiterOn {
+                pub fn get(&self) -> bool {
                     self.0
                 }
-                pub fn take(&mut self) -> super::SpeedLimiterOn {
-                    std::mem::take(&mut self.0)
-                }
-                pub fn is_new(&self) -> bool {
-                    self.1
-                }
-                pub fn reset(&mut self) {
-                    self.1 = false;
-                }
-            }
-            #[derive(Clone, Copy, PartialEq, Default, Debug)]
-            pub struct State(super::SpeedLimiter, bool);
-            impl State {
-                pub fn set(&mut self, state: super::SpeedLimiter) {
-                    self.1 = self.0 != state;
-                    self.0 = state;
-                }
-                pub fn get(&self) -> super::SpeedLimiter {
-                    self.0
-                }
-                pub fn take(&mut self) -> super::SpeedLimiter {
-                    std::mem::take(&mut self.0)
-                }
-                pub fn is_new(&self) -> bool {
-                    self.1
-                }
-                pub fn reset(&mut self) {
-                    self.1 = false;
-                }
-            }
-            #[derive(Clone, Copy, PartialEq, Default, Debug)]
-            pub struct Vdc(super::VdcState, bool);
-            impl Vdc {
-                pub fn set(&mut self, vdc: super::VdcState) {
-                    self.1 = self.0 != vdc;
-                    self.0 = vdc;
-                }
-                pub fn get(&self) -> super::VdcState {
-                    self.0
-                }
-                pub fn take(&mut self) -> super::VdcState {
+                pub fn take(&mut self) -> bool {
                     std::mem::take(&mut self.0)
                 }
                 pub fn is_new(&self) -> bool {
@@ -1514,6 +1623,46 @@ pub mod runtime {
                 }
             }
             #[derive(Clone, Copy, PartialEq, Default, Debug)]
+            pub struct Activation(super::ActivationRequest, bool);
+            impl Activation {
+                pub fn set(&mut self, activation: super::ActivationRequest) {
+                    self.1 = self.0 != activation;
+                    self.0 = activation;
+                }
+                pub fn get(&self) -> super::ActivationRequest {
+                    self.0
+                }
+                pub fn take(&mut self) -> super::ActivationRequest {
+                    std::mem::take(&mut self.0)
+                }
+                pub fn is_new(&self) -> bool {
+                    self.1
+                }
+                pub fn reset(&mut self) {
+                    self.1 = false;
+                }
+            }
+            #[derive(Clone, Copy, PartialEq, Default, Debug)]
+            pub struct Vdc(super::VdcState, bool);
+            impl Vdc {
+                pub fn set(&mut self, vdc: super::VdcState) {
+                    self.1 = self.0 != vdc;
+                    self.0 = vdc;
+                }
+                pub fn get(&self) -> super::VdcState {
+                    self.0
+                }
+                pub fn take(&mut self) -> super::VdcState {
+                    std::mem::take(&mut self.0)
+                }
+                pub fn is_new(&self) -> bool {
+                    self.1
+                }
+                pub fn reset(&mut self) {
+                    self.1 = false;
+                }
+            }
+            #[derive(Clone, Copy, PartialEq, Default, Debug)]
             pub struct Kickdown(super::KickdownState, bool);
             impl Kickdown {
                 pub fn set(&mut self, kickdown: super::KickdownState) {
@@ -1534,16 +1683,16 @@ pub mod runtime {
                 }
             }
             #[derive(Clone, Copy, PartialEq, Default, Debug)]
-            pub struct StateUpdate(bool, bool);
-            impl StateUpdate {
-                pub fn set(&mut self, state_update: bool) {
-                    self.1 = self.0 != state_update;
-                    self.0 = state_update;
+            pub struct OnState(super::SpeedLimiterOn, bool);
+            impl OnState {
+                pub fn set(&mut self, on_state: super::SpeedLimiterOn) {
+                    self.1 = self.0 != on_state;
+                    self.0 = on_state;
                 }
-                pub fn get(&self) -> bool {
+                pub fn get(&self) -> super::SpeedLimiterOn {
                     self.0
                 }
-                pub fn take(&mut self) -> bool {
+                pub fn take(&mut self) -> super::SpeedLimiterOn {
                     std::mem::take(&mut self.0)
                 }
                 pub fn is_new(&self) -> bool {
@@ -1554,16 +1703,16 @@ pub mod runtime {
                 }
             }
             #[derive(Clone, Copy, PartialEq, Default, Debug)]
-            pub struct Activation(super::ActivationRequest, bool);
-            impl Activation {
-                pub fn set(&mut self, activation: super::ActivationRequest) {
-                    self.1 = self.0 != activation;
-                    self.0 = activation;
+            pub struct State(super::SpeedLimiter, bool);
+            impl State {
+                pub fn set(&mut self, state: super::SpeedLimiter) {
+                    self.1 = self.0 != state;
+                    self.0 = state;
                 }
-                pub fn get(&self) -> super::ActivationRequest {
+                pub fn get(&self) -> super::SpeedLimiter {
                     self.0
                 }
-                pub fn take(&mut self) -> super::ActivationRequest {
+                pub fn take(&mut self) -> super::SpeedLimiter {
                     std::mem::take(&mut self.0)
                 }
                 pub fn is_new(&self) -> bool {
@@ -1640,13 +1789,13 @@ pub mod runtime {
             pub v_set_aux: ctx_ty::VSetAux,
             pub v_set: ctx_ty::VSet,
             pub vacuum_brake: ctx_ty::VacuumBrake,
+            pub state_update: ctx_ty::StateUpdate,
+            pub v_update: ctx_ty::VUpdate,
+            pub activation: ctx_ty::Activation,
+            pub vdc: ctx_ty::Vdc,
+            pub kickdown: ctx_ty::Kickdown,
             pub on_state: ctx_ty::OnState,
             pub state: ctx_ty::State,
-            pub vdc: ctx_ty::Vdc,
-            pub v_update: ctx_ty::VUpdate,
-            pub kickdown: ctx_ty::Kickdown,
-            pub state_update: ctx_ty::StateUpdate,
-            pub activation: ctx_ty::Activation,
             pub set_speed: ctx_ty::SetSpeed,
             pub in_regulation_aux: ctx_ty::InRegulationAux,
             pub speed: ctx_ty::Speed,
@@ -1660,13 +1809,13 @@ pub mod runtime {
                 self.v_set_aux.reset();
                 self.v_set.reset();
                 self.vacuum_brake.reset();
+                self.state_update.reset();
+                self.v_update.reset();
+                self.activation.reset();
+                self.vdc.reset();
+                self.kickdown.reset();
                 self.on_state.reset();
                 self.state.reset();
-                self.vdc.reset();
-                self.v_update.reset();
-                self.kickdown.reset();
-                self.state_update.reset();
-                self.activation.reset();
                 self.set_speed.reset();
                 self.in_regulation_aux.reset();
                 self.speed.reset();
@@ -1674,21 +1823,23 @@ pub mod runtime {
         }
         #[derive(Default)]
         pub struct AnotherSpeedLimiterServiceStore {
-            vdc: Option<(VdcState, std::time::Instant)>,
-            speed: Option<(f64, std::time::Instant)>,
             vacuum_brake: Option<(VacuumBrakeState, std::time::Instant)>,
             activation: Option<(ActivationRequest, std::time::Instant)>,
             kickdown: Option<(KickdownState, std::time::Instant)>,
             set_speed: Option<(f64, std::time::Instant)>,
+            period_clock_1: Option<((), std::time::Instant)>,
+            vdc: Option<(VdcState, std::time::Instant)>,
+            speed: Option<(f64, std::time::Instant)>,
         }
         impl AnotherSpeedLimiterServiceStore {
             pub fn not_empty(&self) -> bool {
-                self.vdc.is_some()
-                    || self.speed.is_some()
-                    || self.vacuum_brake.is_some()
+                self.vacuum_brake.is_some()
                     || self.activation.is_some()
                     || self.kickdown.is_some()
                     || self.set_speed.is_some()
+                    || self.period_clock_1.is_some()
+                    || self.vdc.is_some()
+                    || self.speed.is_some()
             }
         }
         pub struct AnotherSpeedLimiterService {
@@ -1696,40 +1847,53 @@ pub mod runtime {
             context: Context,
             delayed: bool,
             input_store: AnotherSpeedLimiterServiceStore,
-            speed_limiter: SpeedLimiterState,
             process_set_speed: ProcessSetSpeedState,
+            speed_limiter: SpeedLimiterState,
             output: grust::futures::channel::mpsc::Sender<O>,
+            timer: grust::futures::channel::mpsc::Sender<(T, std::time::Instant)>,
         }
         impl AnotherSpeedLimiterService {
             pub fn init(
                 _grust_reserved_init_instant: std::time::Instant,
                 output: grust::futures::channel::mpsc::Sender<O>,
+                timer: grust::futures::channel::mpsc::Sender<(T, std::time::Instant)>,
             ) -> AnotherSpeedLimiterService {
                 let context = Context::init();
                 let delayed = true;
                 let input_store = Default::default();
-                let speed_limiter = <SpeedLimiterState as grust::core::Component>::init();
                 let process_set_speed = <ProcessSetSpeedState as grust::core::Component>::init();
+                let speed_limiter = <SpeedLimiterState as grust::core::Component>::init();
                 AnotherSpeedLimiterService {
                     _grust_reserved_init_instant,
                     context,
                     delayed,
                     input_store,
-                    speed_limiter,
                     process_set_speed,
+                    speed_limiter,
                     output,
+                    timer,
                 }
             }
             pub async fn handle_init(
                 &mut self,
-                vdc: VdcState,
-                speed: f64,
                 vacuum_brake: VacuumBrakeState,
                 activation: ActivationRequest,
                 kickdown: KickdownState,
                 set_speed: f64,
+                vdc: VdcState,
+                speed: f64,
             ) -> Result<(), grust::futures::channel::mpsc::SendError> {
                 let _grust_reserved_instant = self._grust_reserved_init_instant;
+                let clock_ref = &mut None;
+                self.context.speed.set(speed);
+                self.context.vdc.set(vdc);
+                self.send_timer(T::PeriodClock1, _grust_reserved_instant)
+                    .await?;
+                *clock_ref = Some(
+                    (_grust_reserved_instant
+                        .duration_since(self._grust_reserved_init_instant)
+                        .as_millis()) as f64,
+                );
                 self.context.set_speed.set(set_speed);
                 let ProcessSetSpeedOutput {
                     v_set: v_set_aux,
@@ -1752,8 +1916,6 @@ pub mod runtime {
                 self.context.kickdown.set(kickdown);
                 self.context.activation.set(activation);
                 self.context.vacuum_brake.set(vacuum_brake);
-                self.context.speed.set(speed);
-                self.context.vdc.set(vdc);
                 let SpeedLimiterOutput {
                     state: state,
                     on_state: on_state,
@@ -1768,6 +1930,7 @@ pub mod runtime {
                         vdc_disabled: vdc,
                         speed: speed,
                         v_set: v_set,
+                        clock: *clock_ref,
                     },
                 );
                 self.context.state.set(state);
@@ -1781,110 +1944,6 @@ pub mod runtime {
                     _grust_reserved_instant,
                 )
                 .await?;
-                Ok(())
-            }
-            pub async fn handle_vdc(
-                &mut self,
-                _vdc_instant: std::time::Instant,
-                vdc: VdcState,
-            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
-                if self.delayed {
-                    self.reset_time_constraints(_vdc_instant).await?;
-                    self.context.reset();
-                    self.context.vdc.set(vdc);
-                    if self.context.activation.is_new()
-                        || self.context.vacuum_brake.is_new()
-                        || self.context.kickdown.is_new()
-                        || self.context.vdc.is_new()
-                        || self.context.speed.is_new()
-                        || self.context.v_set.is_new()
-                    {
-                        let SpeedLimiterOutput {
-                            state: state,
-                            on_state: on_state,
-                            in_regulation: in_regulation_aux,
-                            state_update: state_update,
-                        } = <SpeedLimiterState as grust::core::Component>::step(
-                            &mut self.speed_limiter,
-                            SpeedLimiterInput {
-                                activation_req: self.context.activation.get(),
-                                vacuum_brake_state: self.context.vacuum_brake.get(),
-                                kickdown: self.context.kickdown.get(),
-                                vdc_disabled: vdc,
-                                speed: self.context.speed.get(),
-                                v_set: self.context.v_set.get(),
-                            },
-                        );
-                        self.context.state.set(state);
-                        self.context.on_state.set(on_state);
-                        self.context.in_regulation_aux.set(in_regulation_aux);
-                        self.context.state_update.set(state_update);
-                    }
-                    let in_regulation = self.context.in_regulation_aux.get();
-                    self.context.in_regulation.set(in_regulation);
-                    if self.context.in_regulation.is_new() {
-                        self.send_output(
-                            O::InRegulation(in_regulation, _vdc_instant),
-                            _vdc_instant,
-                        )
-                        .await?;
-                    }
-                } else {
-                    let unique = self.input_store.vdc.replace((vdc, _vdc_instant));
-                    assert ! (unique . is_none () , "flow `vdc` changes twice within one minimal delay of the service, consider reducing this delay");
-                }
-                Ok(())
-            }
-            pub async fn handle_speed(
-                &mut self,
-                _speed_instant: std::time::Instant,
-                speed: f64,
-            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
-                if self.delayed {
-                    self.reset_time_constraints(_speed_instant).await?;
-                    self.context.reset();
-                    self.context.speed.set(speed);
-                    if self.context.activation.is_new()
-                        || self.context.vacuum_brake.is_new()
-                        || self.context.kickdown.is_new()
-                        || self.context.vdc.is_new()
-                        || self.context.speed.is_new()
-                        || self.context.v_set.is_new()
-                    {
-                        let SpeedLimiterOutput {
-                            state: state,
-                            on_state: on_state,
-                            in_regulation: in_regulation_aux,
-                            state_update: state_update,
-                        } = <SpeedLimiterState as grust::core::Component>::step(
-                            &mut self.speed_limiter,
-                            SpeedLimiterInput {
-                                activation_req: self.context.activation.get(),
-                                vacuum_brake_state: self.context.vacuum_brake.get(),
-                                kickdown: self.context.kickdown.get(),
-                                vdc_disabled: self.context.vdc.get(),
-                                speed: speed,
-                                v_set: self.context.v_set.get(),
-                            },
-                        );
-                        self.context.state.set(state);
-                        self.context.on_state.set(on_state);
-                        self.context.in_regulation_aux.set(in_regulation_aux);
-                        self.context.state_update.set(state_update);
-                    }
-                    let in_regulation = self.context.in_regulation_aux.get();
-                    self.context.in_regulation.set(in_regulation);
-                    if self.context.in_regulation.is_new() {
-                        self.send_output(
-                            O::InRegulation(in_regulation, _speed_instant),
-                            _speed_instant,
-                        )
-                        .await?;
-                    }
-                } else {
-                    let unique = self.input_store.speed.replace((speed, _speed_instant));
-                    assert ! (unique . is_none () , "flow `speed` changes twice within one minimal delay of the service, consider reducing this delay");
-                }
                 Ok(())
             }
             pub async fn handle_vacuum_brake(
@@ -1917,6 +1976,7 @@ pub mod runtime {
                                 vdc_disabled: self.context.vdc.get(),
                                 speed: self.context.speed.get(),
                                 v_set: self.context.v_set.get(),
+                                clock: None,
                             },
                         );
                         self.context.state.set(state);
@@ -1972,6 +2032,7 @@ pub mod runtime {
                                 vdc_disabled: self.context.vdc.get(),
                                 speed: self.context.speed.get(),
                                 v_set: self.context.v_set.get(),
+                                clock: None,
                             },
                         );
                         self.context.state.set(state);
@@ -2027,6 +2088,7 @@ pub mod runtime {
                                 vdc_disabled: self.context.vdc.get(),
                                 speed: self.context.speed.get(),
                                 v_set: self.context.v_set.get(),
+                                clock: None,
                             },
                         );
                         self.context.state.set(state);
@@ -2101,6 +2163,7 @@ pub mod runtime {
                                 vdc_disabled: self.context.vdc.get(),
                                 speed: self.context.speed.get(),
                                 v_set: v_set,
+                                clock: None,
                             },
                         );
                         self.context.state.set(state);
@@ -2126,6 +2189,175 @@ pub mod runtime {
                 }
                 Ok(())
             }
+            pub async fn handle_period_clock_1(
+                &mut self,
+                _period_clock_1_instant: std::time::Instant,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                if self.delayed {
+                    self.reset_time_constraints(_period_clock_1_instant).await?;
+                    self.context.reset();
+                    let clock_ref = &mut None;
+                    self.send_timer(T::PeriodClock1, _period_clock_1_instant)
+                        .await?;
+                    *clock_ref = Some(
+                        (_period_clock_1_instant
+                            .duration_since(self._grust_reserved_init_instant)
+                            .as_millis()) as f64,
+                    );
+                    if clock_ref.is_some()
+                        || self.context.activation.is_new()
+                        || self.context.vacuum_brake.is_new()
+                        || self.context.kickdown.is_new()
+                        || self.context.vdc.is_new()
+                        || self.context.speed.is_new()
+                        || self.context.v_set.is_new()
+                    {
+                        let SpeedLimiterOutput {
+                            state: state,
+                            on_state: on_state,
+                            in_regulation: in_regulation_aux,
+                            state_update: state_update,
+                        } = <SpeedLimiterState as grust::core::Component>::step(
+                            &mut self.speed_limiter,
+                            SpeedLimiterInput {
+                                activation_req: self.context.activation.get(),
+                                vacuum_brake_state: self.context.vacuum_brake.get(),
+                                kickdown: self.context.kickdown.get(),
+                                vdc_disabled: self.context.vdc.get(),
+                                speed: self.context.speed.get(),
+                                v_set: self.context.v_set.get(),
+                                clock: *clock_ref,
+                            },
+                        );
+                        self.context.state.set(state);
+                        self.context.on_state.set(on_state);
+                        self.context.in_regulation_aux.set(in_regulation_aux);
+                        self.context.state_update.set(state_update);
+                    }
+                    let in_regulation = self.context.in_regulation_aux.get();
+                    self.context.in_regulation.set(in_regulation);
+                    if self.context.in_regulation.is_new() {
+                        self.send_output(
+                            O::InRegulation(in_regulation, _period_clock_1_instant),
+                            _period_clock_1_instant,
+                        )
+                        .await?;
+                    }
+                } else {
+                    let unique = self
+                        .input_store
+                        .period_clock_1
+                        .replace(((), _period_clock_1_instant));
+                    assert ! (unique . is_none () , "flow `period_clock_1` changes twice within one minimal delay of the service, consider reducing this delay");
+                }
+                Ok(())
+            }
+            pub async fn handle_vdc(
+                &mut self,
+                _vdc_instant: std::time::Instant,
+                vdc: VdcState,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                if self.delayed {
+                    self.reset_time_constraints(_vdc_instant).await?;
+                    self.context.reset();
+                    self.context.vdc.set(vdc);
+                    if self.context.activation.is_new()
+                        || self.context.vacuum_brake.is_new()
+                        || self.context.kickdown.is_new()
+                        || self.context.vdc.is_new()
+                        || self.context.speed.is_new()
+                        || self.context.v_set.is_new()
+                    {
+                        let SpeedLimiterOutput {
+                            state: state,
+                            on_state: on_state,
+                            in_regulation: in_regulation_aux,
+                            state_update: state_update,
+                        } = <SpeedLimiterState as grust::core::Component>::step(
+                            &mut self.speed_limiter,
+                            SpeedLimiterInput {
+                                activation_req: self.context.activation.get(),
+                                vacuum_brake_state: self.context.vacuum_brake.get(),
+                                kickdown: self.context.kickdown.get(),
+                                vdc_disabled: vdc,
+                                speed: self.context.speed.get(),
+                                v_set: self.context.v_set.get(),
+                                clock: None,
+                            },
+                        );
+                        self.context.state.set(state);
+                        self.context.on_state.set(on_state);
+                        self.context.in_regulation_aux.set(in_regulation_aux);
+                        self.context.state_update.set(state_update);
+                    }
+                    let in_regulation = self.context.in_regulation_aux.get();
+                    self.context.in_regulation.set(in_regulation);
+                    if self.context.in_regulation.is_new() {
+                        self.send_output(
+                            O::InRegulation(in_regulation, _vdc_instant),
+                            _vdc_instant,
+                        )
+                        .await?;
+                    }
+                } else {
+                    let unique = self.input_store.vdc.replace((vdc, _vdc_instant));
+                    assert ! (unique . is_none () , "flow `vdc` changes twice within one minimal delay of the service, consider reducing this delay");
+                }
+                Ok(())
+            }
+            pub async fn handle_speed(
+                &mut self,
+                _speed_instant: std::time::Instant,
+                speed: f64,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                if self.delayed {
+                    self.reset_time_constraints(_speed_instant).await?;
+                    self.context.reset();
+                    self.context.speed.set(speed);
+                    if self.context.activation.is_new()
+                        || self.context.vacuum_brake.is_new()
+                        || self.context.kickdown.is_new()
+                        || self.context.vdc.is_new()
+                        || self.context.speed.is_new()
+                        || self.context.v_set.is_new()
+                    {
+                        let SpeedLimiterOutput {
+                            state: state,
+                            on_state: on_state,
+                            in_regulation: in_regulation_aux,
+                            state_update: state_update,
+                        } = <SpeedLimiterState as grust::core::Component>::step(
+                            &mut self.speed_limiter,
+                            SpeedLimiterInput {
+                                activation_req: self.context.activation.get(),
+                                vacuum_brake_state: self.context.vacuum_brake.get(),
+                                kickdown: self.context.kickdown.get(),
+                                vdc_disabled: self.context.vdc.get(),
+                                speed: speed,
+                                v_set: self.context.v_set.get(),
+                                clock: None,
+                            },
+                        );
+                        self.context.state.set(state);
+                        self.context.on_state.set(on_state);
+                        self.context.in_regulation_aux.set(in_regulation_aux);
+                        self.context.state_update.set(state_update);
+                    }
+                    let in_regulation = self.context.in_regulation_aux.get();
+                    self.context.in_regulation.set(in_regulation);
+                    if self.context.in_regulation.is_new() {
+                        self.send_output(
+                            O::InRegulation(in_regulation, _speed_instant),
+                            _speed_instant,
+                        )
+                        .await?;
+                    }
+                } else {
+                    let unique = self.input_store.speed.replace((speed, _speed_instant));
+                    assert ! (unique . is_none () , "flow `speed` changes twice within one minimal delay of the service, consider reducing this delay");
+                }
+                Ok(())
+            }
             #[inline]
             pub async fn reset_time_constraints(
                 &mut self,
@@ -2142,6 +2374,15 @@ pub mod runtime {
                 self.output.feed(output).await?;
                 Ok(())
             }
+            #[inline]
+            pub async fn send_timer(
+                &mut self,
+                timer: T,
+                instant: std::time::Instant,
+            ) -> Result<(), grust::futures::channel::mpsc::SendError> {
+                self.timer.feed((timer, instant)).await?;
+                Ok(())
+            }
         }
     }
 }
@@ -2151,14 +2392,22 @@ pub fn run(
     input_stream: impl Stream<Item = runtime::RuntimeInput> + Send + 'static,
     init_signals: runtime::RuntimeInit,
 ) -> grust::futures::channel::mpsc::Receiver<runtime::RuntimeOutput> {
+    const TIMER_CHANNEL_SIZE: usize = 2usize + 2;
+    let (timers_sink, timers_stream) = grust::futures::channel::mpsc::channel(TIMER_CHANNEL_SIZE);
+    let timers_stream = timers_stream.map(
+        |(timer, instant): (runtime::RuntimeTimer, std::time::Instant)| {
+            let deadline = instant + grust::core::timer_stream::Timing::get_duration(&timer);
+            runtime::RuntimeInput::Timer(timer, deadline)
+        },
+    );
     const OUTPUT_CHANNEL_SIZE: usize = 2usize;
     let (output_sink, output_stream) = grust::futures::channel::mpsc::channel(OUTPUT_CHANNEL_SIZE);
-    const PRIO_STREAM_SIZE: usize = 7usize;
+    const PRIO_STREAM_SIZE: usize = 100usize;
     let prio_stream = grust::core::priority_stream::prio_stream::<_, _, PRIO_STREAM_SIZE>(
-        input_stream,
+        grust::futures::stream::select(input_stream, timers_stream),
         runtime::RuntimeInput::order,
     );
-    let service = runtime::Runtime::new(_grust_reserved_init_instant, output_sink);
+    let service = runtime::Runtime::new(_grust_reserved_init_instant, output_sink, timers_sink);
     grust::tokio::spawn(async move {
         let result = service.run_loop(prio_stream, init_signals).await;
         assert!(result.is_ok())
