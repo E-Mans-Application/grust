@@ -11,7 +11,7 @@ A procedural macro for the grust language.
     ```
 
 2. Restart terminal
-3. Retrieve `grustine` repository
+3. Retrieve `grust` repository
 
     ```text
     > git clone https://github.com/langrust/grust.git
