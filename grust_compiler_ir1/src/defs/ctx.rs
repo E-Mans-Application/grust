@@ -210,16 +210,17 @@ impl ToTokens for Flows {
                 let name = element_name;
                 let super_path = Ident::new("super", Span::call_site()).into();
                 let ty = element_ty.to_prefix(&super_path);
+                let default_value = element_ty.default_value();
                 quote! {
-                    #[derive(Clone, Copy, PartialEq, Default, Debug)]
-                    pub struct #struct_name(#ty, bool);
+                    #[derive(Clone, Copy, PartialEq, ::grust::core::smart_default::SmartDefault, Debug)]
+                    pub struct #struct_name(#[default(#default_value)] #ty, bool);
                     impl #struct_name {
                         pub fn set(&mut self, #name: #ty) {
                             self.1 = self.0 != #name;
                             self.0 = #name;
                         }
                         pub fn get(&self) -> #ty { self.0 }
-                        pub fn take(&mut self) -> #ty { std::mem::take(&mut self.0) }
+                        pub fn take(&mut self) -> #ty { ::core::mem::replace(&mut self.0, #default_value) }
                         pub fn is_new(&self) -> bool { self.1 }
                         pub fn reset(&mut self) { self.1 = false; }
                     }

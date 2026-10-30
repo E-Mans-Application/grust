@@ -41,18 +41,17 @@ impl ToTokens for StructureTokens<'_> {
             )
             .to_tokens(tokens)
         } else {
-            quote!(#[derive(Clone, Copy, PartialEq, Default, Debug)]).to_tokens(tokens)
+            quote!(#[derive(Clone, Copy, PartialEq, ::grust::core::smart_default::SmartDefault, Debug)]).to_tokens(tokens)
         };
         let pub_token = if self.public {
             quote! {pub}
         } else {
             quote! {}
         };
-        let fields = self
-            .s
-            .fields
-            .iter()
-            .map(|(name, typ)| quote! { #pub_token #name: #typ });
+        let fields = self.s.fields.iter().map(|(name, typ)| {
+            let default_value = typ.default_value();
+            quote! { #[default(#default_value)] #pub_token #name: #typ }
+        });
         let name = &self.s.name;
         quote! {
             #pub_token struct #name {
@@ -80,9 +79,11 @@ mod test {
         .to_token_stream();
 
         let control = parse_quote! {
-            #[derive(Clone, Copy, PartialEq, Default, Debug)]
+            #[derive(Clone, Copy, PartialEq, ::grust::core::smart_default::SmartDefault, Debug)]
             pub struct Point {
+                #[default(::core::default::Default::default())]
                 pub x: i64,
+                #[default(::core::default::Default::default())]
                 pub y: i64
             }
         };

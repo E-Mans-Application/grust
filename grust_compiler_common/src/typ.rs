@@ -464,6 +464,29 @@ pub mod typ_tokens {
             }
         }
     }
+
+    impl Typ {
+        pub fn default_value(&self) -> TokenStream2 {
+            match self {
+                Typ::Array { ty, .. } => {
+                    let elt_value = ty.default_value();
+                    quote!( ::core::array::from_fn(|_| #elt_value) )
+                }
+                Typ::Signal { ty, .. } => ty.default_value(),
+                Typ::Tuple { elements, .. } => {
+                    let defaults = elements
+                        .iter()
+                        .map(|ty| ty.default_value())
+                        .collect::<Vec<_>>();
+
+                    quote!((#(#defaults),*))
+                }
+                _ => {
+                    quote!(::core::default::Default::default())
+                }
+            }
+        }
+    }
 }
 
 impl Typ {

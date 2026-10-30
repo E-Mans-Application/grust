@@ -8,6 +8,7 @@ pin-project = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+smart-default = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }

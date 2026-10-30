@@ -99,7 +99,8 @@ impl ToTokens for ExecutionMachineTokens<'_> {
                     input_get_instant_arms
                         .push(quote! { I::#enum_ident(_, #instant) => *#instant });
                     if !typ.is_event() {
-                        init_fields.push(quote! { pub #ident: #typ });
+                        let default_value = typ.default_value();
+                        init_fields.push(quote! { #[default(#default_value)] pub #ident: #typ });
                     }
                 }
 
@@ -209,7 +210,7 @@ impl ToTokens for ExecutionMachineTokens<'_> {
                 // runtime output struct
                 {
                     quote! {
-                        #[derive(Debug, Default)]
+                        #[derive(Debug, ::grust::core::smart_default::SmartDefault)]
                         pub struct RuntimeInit {
                             #(#init_fields),*
                         }
